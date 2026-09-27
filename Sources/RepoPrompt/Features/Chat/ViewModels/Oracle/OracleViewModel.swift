@@ -3212,6 +3212,7 @@ class OracleViewModel: ObservableObject {
                 msgs.append(errorMessage)
             }
             registerMessage(errorMessage.id, sessionID: targetSessionID)
+            clearMCPSessionUIState(for: targetSessionID) // This send ends here; drop the label set for it.
             autosaveChatHistory(for: targetSessionID)
             await finalisationHub.fulfil(
                 errorMessage.id,
