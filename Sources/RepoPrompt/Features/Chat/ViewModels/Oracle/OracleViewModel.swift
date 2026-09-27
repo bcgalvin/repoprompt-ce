@@ -3198,7 +3198,9 @@ class OracleViewModel: ObservableObject {
         #if DEBUG
             if let contextBuilderScope { contextBuilderBeforeAvailabilityForTesting?(contextBuilderScope, model) }
         #endif
-        if !promptViewModel.isModelAvailable(model) {
+        // A revoked lane adds no error turn: it falls through to the bind below, which refuses and
+        // rolls back the user turn.
+        if !promptViewModel.isModelAvailable(model), contextBuilderScope?.isLive != false {
             // Show error in chat instead of silently falling back
             let errorMessage = AIChatMessage(
                 content: "Error: The model '\(model.displayName)' is not available. Please check that the \(model.providerType.displayName) API key is configured in Settings.",
