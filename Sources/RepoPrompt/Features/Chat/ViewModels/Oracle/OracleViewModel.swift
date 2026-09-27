@@ -1919,7 +1919,8 @@ class OracleViewModel: ObservableObject {
             name: session.name
         ) else { return nil }
 
-        guard contextBuilderScope?.isLive != false else { return nil }
+        // The tab already exists: link it even if the lane expired meanwhile, rather than leave an
+        // unlinked tab behind. Callers re-check the lane before any further work.
         var updatedTab = newTab
         updatedTab.selection = StoredSelection(
             selectedPaths: session.selectedFilePaths,
