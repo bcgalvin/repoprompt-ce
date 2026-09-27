@@ -3550,13 +3550,22 @@ class OracleViewModel: ObservableObject {
         streamIDsByQueryId.removeValue(forKey: queryID)
         contextBuilderScopes.removeValue(forKey: queryID)
         if runStateBySession[scope.sessionID]?.activeQueryId == queryID {
+            var droppedEmptyPlaceholder = false
             withSessionMessages(scope.sessionID) { messages in
-                if let index = messages.firstIndex(where: { $0.id == queryID }) {
+                guard let index = messages.firstIndex(where: { $0.id == queryID }) else { return }
+                if messages[index].content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    // Like an ordinary cancel: keep the dispatched user turn, not an empty assistant turn.
+                    messages.remove(at: index)
+                    droppedEmptyPlaceholder = true
+                } else {
                     messages[index].setIsFinalized(true)
                 }
             }
+            if droppedEmptyPlaceholder { purgeMessageCaches(for: queryID) }
             clearSessionStreaming(scope.sessionID)
             clearMCPSessionUIState(for: scope.sessionID)
+            // Save the admitted transcript now; the waiter's unpin can unload this chat unsaved.
+            autosaveChatHistory(for: scope.sessionID)
         }
         if let streamID { await aiQueriesService.cancelStream(id: streamID) }
         // fulfil is first-wins: cleanup must never replace an authoritative outcome already stored.
