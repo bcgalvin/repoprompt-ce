@@ -959,6 +959,8 @@ extension OracleViewModel {
             queryId = await send()
         #endif
         guard let queryId else {
+            // No query exists to clear the label this call set above.
+            clearMCPSessionUIState(for: chatID)
             throw OracleContextBuilderCompletionError.missingExactQuery
         }
         let response = try await waitForContextBuilderCompletion(queryId)
