@@ -3562,11 +3562,13 @@ class OracleViewModel: ObservableObject {
                     messages[index].setIsFinalized(true)
                 }
             }
-            if droppedEmptyPlaceholder { purgeMessageCaches(for: queryID) }
             clearSessionStreaming(scope.sessionID)
             clearMCPSessionUIState(for: scope.sessionID)
             // Save the admitted transcript now; the waiter's unpin can unload this chat unsaved.
             autosaveChatHistory(for: scope.sessionID)
+            // Purge after saving, as an ordinary cancel does: the save still needs this query's
+            // session mapping to keep the lane's frozen Oracle settings.
+            if droppedEmptyPlaceholder { purgeMessageCaches(for: queryID) }
         }
         if let streamID { await aiQueriesService.cancelStream(id: streamID) }
         // fulfil is first-wins: cleanup must never replace an authoritative outcome already stored.

@@ -292,7 +292,7 @@ import XCTest
                 XCTAssertEqual(harness.uiReply?.oracleGroup?.result.oracleResults.map(\.status), [.failed, .completed])
                 let error = try XCTUnwrap(harness.uiReply?.oracleGroup?.result.oracleResults.first?.error)
                 XCTAssertTrue(error.message.contains("not available"))
-                // Opening the lane chat shows its error turn, not the failed send's MCP mode/model/preset label.
+                // Opening the lane chat must not show the failed send's MCP mode/model/preset label.
                 XCTAssertTrue(oracle.isSessionPinnedForTesting(scope.sessionID))
                 oracle.currentSessionID = scope.sessionID
                 XCTAssertNil(oracle.mcpModelInfo)
@@ -408,6 +408,23 @@ import XCTest
                     if let partial { try await harness.emit(.gpt54Mini, text: partial) }
                     harness.complete(.gpt54, text: "sibling")
                     let scope = try XCTUnwrap(primary, stop)
+                    var frozen: ChatSession?
+                    if partial == nil {
+                        // Show the silent lane's chat on the active tab with different live controls, so a save
+                        // that took live prompt state would overwrite what tool_chatSend froze for the lane.
+                        let lane = try XCTUnwrap(oracle.sessions.first { $0.id == scope.sessionID }, stop)
+                        frozen = lane
+                        oracle.currentSessionID = scope.sessionID
+                        oracle.promptViewModel.restorePreferredModelForSession(AIModel.gpt54.rawValue)
+                        oracle.promptViewModel.selectedChatPresetID = lane.selectedChatPresetID == ChatPreset.BuiltIn.chat.id
+                            ? ChatPreset.BuiltIn.plan.id : ChatPreset.BuiltIn.chat.id
+                        XCTAssertTrue(OracleViewModel.shouldUseLivePromptStateForAutosave(
+                            sessionID: scope.sessionID, currentSessionID: oracle.currentSessionID,
+                            sessionComposeTabID: lane.composeTabID, activeComposeTabID: oracle.promptViewModel.activeComposeTabID
+                        ), "\(stop): the lane chat is current on the active tab")
+                        XCTAssertNotEqual(oracle.promptViewModel.preferredModel, lane.preferredAIModel, stop)
+                        XCTAssertNotEqual(oracle.promptViewModel.selectedChatPresetID, lane.selectedChatPresetID, stop)
+                    }
                     if stop == "cancel" {
                         await oracle.cancelAIResponse(in: scope.sessionID)
                     } else {
@@ -425,6 +442,10 @@ import XCTest
                     let saved = try await oracle.chatData.loadChatSession(from: XCTUnwrap(session.fileURL, stop))
                     XCTAssertEqual(saved.messages.map(\.isUser), partial == nil ? [true] : [true, false], "\(stop): saved turns")
                     XCTAssertEqual(saved.messages.last { !$0.isUser }?.rawText, partial, "\(stop): saved partial")
+                    if let frozen {
+                        XCTAssertEqual(saved.preferredAIModel, frozen.preferredAIModel, "\(stop): saved model")
+                        XCTAssertEqual(saved.selectedChatPresetID, frozen.selectedChatPresetID, "\(stop): saved preset")
+                    }
                 }
             }
         }
