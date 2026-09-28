@@ -854,6 +854,8 @@ extension OracleViewModel {
             owner: owner,
             expectedRevision: group.revision
         )
+        // A released lane's save is an un-awaited tracked task; let it land (and record its file) before deleting files.
+        if let workspaceID = session.workspaceID { await drainTrackedAutosaves(for: workspaceID) }
         let removed = sessions.filter { memberIDs.contains($0.id) }
         var projectionCleanupFailed = false
         for projection in removed {
