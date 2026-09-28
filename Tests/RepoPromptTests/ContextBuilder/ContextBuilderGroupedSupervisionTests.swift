@@ -450,6 +450,31 @@ import XCTest
             }
         }
 
+        func testDeletingCancelledLaneChatAfterGroupSettlesLeavesNoChatFile() async throws {
+            try await withHarness { harness in
+                var primary: ContextBuilderOracleLaneScope?
+                let oracle = harness.driver.window.oracleViewModel
+                oracle.contextBuilderBeforeChatResolutionForTesting = { scope, model in
+                    if model == .gpt54Mini { primary = scope }
+                }
+                try harness.startUI()
+                try await harness.waitForStreams()
+                try await harness.emit(.gpt54Mini, text: "partial ")
+                harness.complete(.gpt54, text: "sibling")
+                let scope = try XCTUnwrap(primary)
+                // Cancelling queues the lane's release save; a running group can't be deleted, so delete once settled.
+                await oracle.cancelAIResponse(in: scope.sessionID)
+                try await harness.wait(harness.settled)
+                let session = try XCTUnwrap(oracle.sessions.first { $0.id == scope.sessionID })
+                let workspace = try XCTUnwrap(harness.driver.manager.workspaces.first { $0.id == session.workspaceID })
+                await oracle.deleteSession(session)
+                await oracle.drainTrackedAutosaves(for: workspace.id)
+                XCTAssertNil(oracle.sessionOperationError)
+                let files = try await oracle.chatData.listChatSessions(for: workspace).map(\.lastPathComponent)
+                XCTAssertFalse(files.contains("ChatSession-\(session.id.uuidString).json"), "A deleted lane chat's file came back")
+            }
+        }
+
         func testTimedOutFinalizerDrainsWithoutClearingReplacementDuringOuterCancellation() async throws {
             try await withHarness { harness in
                 let driver = harness.driver
