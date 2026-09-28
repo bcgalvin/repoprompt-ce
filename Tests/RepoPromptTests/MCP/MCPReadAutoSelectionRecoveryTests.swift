@@ -421,6 +421,22 @@ final class MCPReadAutoSelectionRecoveryTests: XCTestCase {
         assertFullyReclaimed(coordinator)
     }
 
+    func testGateEntryWaitSurvivesMainActorStall() async {
+        let gate = RecoveryCancellationIgnoringGate()
+        // Stands in for a worker whose main-actor turn is delayed, as on a loaded runner (#1100).
+        let stalledEntry = Task { @MainActor in
+            self.occupyMainActor(for: 0.2)
+            await gate.enter()
+        }
+        guard await gate.waitUntilEntered() else {
+            await failWait("main-actor-stalled worker to enter", gates: [gate])
+            await stalledEntry.value
+            return
+        }
+        await gate.release()
+        await stalledEntry.value
+    }
+
     /// Recovery tests replace file application with callbacks, but enqueue still receives
     /// authority captured from a genuinely activated catalog rather than a fabricated ticket.
     private func makeAuthority() async throws -> MCPServerViewModel.FrozenFileToolAuthority {
@@ -486,6 +502,12 @@ final class MCPReadAutoSelectionRecoveryTests: XCTestCase {
         for gate in gates {
             await gate.release()
         }
+    }
+
+    /// Blocks the main thread synchronously: `Task.sleep` would free the main actor and not reproduce the stall.
+    /// `Thread.sleep` is unavailable directly in async contexts, hence this synchronous helper.
+    private func occupyMainActor(for interval: TimeInterval) {
+        Thread.sleep(forTimeInterval: interval)
     }
 
     private func assertFullyReclaimed(
