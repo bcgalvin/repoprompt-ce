@@ -45,18 +45,21 @@ final class ClaudeCodeProviderCancellationTests: XCTestCase {
             FileManager.default.fileExists(atPath: fixture.acknowledgement.path)
                 || !fixture.childExists
         } && FileManager.default.fileExists(atPath: fixture.acknowledgement.path)
-        print(
-            "ORACLE_CANCEL_OBSERVATION pid=\(fixture.pid ?? 0) " +
-                "childExists=\(childExistedAfterCancellation) " +
-                "providerTaskCompleted=\(taskCompletedAfterCancellation) " +
-                "postCancelAcknowledgement=\(acknowledgedAfterCancellation)"
-        )
-
         // Registered teardown releases the fixture even when these fail.
         // Teardown cleanup is not credited as request-cancellation success.
         XCTAssertFalse(childExistedAfterCancellation, "Request cancellation left the owned CLI child present")
         XCTAssertTrue(taskCompletedAfterCancellation, "Provider task did not complete after request cancellation")
         XCTAssertFalse(acknowledgedAfterCancellation, "Owned child executed a gate command after cancellation")
+
+        guard case let .failure(error)? = fixture.outcome else {
+            XCTFail("Expected cancellation failure; outcome=\(String(describing: fixture.outcome))")
+            return
+        }
+        var cancellationSource = error
+        if case let .apiError(source)? = error as? AIProviderError, let source {
+            cancellationSource = source
+        }
+        XCTAssertTrue(cancellationSource is CancellationError, "Expected cancellation-bearing failure: \(error)")
     }
 
     func testNormalCompletionPreservesResponseAndUsage() async throws {
@@ -80,9 +83,6 @@ final class ClaudeCodeProviderCancellationTests: XCTestCase {
         XCTAssertEqual(response.completionTokens, 5)
         XCTAssertEqual(response.cost, 0.01)
         XCTAssertFalse(fixture.childExists, "Runner completion must follow owned-child exit/reap")
-        let responseAndUsagePreserved = response.text == "fixture answer" && response.stopCount == 1
-            && response.promptTokens == 3 && response.completionTokens == 5 && response.cost == 0.01
-        print("ORACLE_NORMAL_OBSERVATION responseAndUsagePreserved=\(responseAndUsagePreserved) providerTaskCompleted=\(fixture.outcome != nil) childExists=\(fixture.childExists)")
     }
 }
 
@@ -101,7 +101,7 @@ private final class OracleCancellationFixture {
 
     enum Outcome {
         case success(Response)
-        case failure(String)
+        case failure(Error)
     }
 
     let acknowledgement: URL
@@ -186,7 +186,7 @@ private final class OracleCancellationFixture {
                 }
                 outcome = .success(response)
             } catch {
-                outcome = .failure(String(describing: error))
+                outcome = .failure(error)
             }
         }
     }
@@ -251,7 +251,6 @@ private final class OracleCancellationFixture {
             await provider.dispose()
         }
         if settled, let task { await task.value }
-        print("ORACLE_FIXTURE_CLEANUP pid=\(pid ?? 0) settled=\(settled) childExists=\(childExists) providerTaskCompleted=\(outcome != nil)")
         XCTAssertTrue(settled, "Fixture-owned child/task did not settle during bounded cleanup")
         close(gateFD)
         try? FileManager.default.removeItem(at: directory)
