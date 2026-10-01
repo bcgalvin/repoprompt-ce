@@ -220,20 +220,6 @@ package final class CLIProcessRunner {
         }
     }
 
-    private func terminateChild(_ p: SpawnedProcess, sendSigterm: Bool) {
-        // Only the waitpid-driven cleanup should close stdout/stderr. Here we just stop input
-        // and request termination so reader threads aren't left blocked on a closed read end.
-        p.stdin?.closeFile()
-        if sendSigterm {
-            ProcessTermination.signalProcessGroupOrPID(
-                pid: p.pid,
-                processGroupID: p.processGroupID,
-                signal: SIGTERM,
-                logger: { [weak self] message in self?.log(message) }
-            )
-        }
-    }
-
     @inline(__always)
     private static func isRunnableExecutable(_ path: String) -> Bool {
         var isDir: ObjCBool = false
@@ -430,7 +416,8 @@ package final class CLIProcessRunner {
                             return result
                         } onCancel: {
                             spawned.stdin?.closeFile()
-                            terminateChild(spawned, sendSigterm: true)
+                            // Let the waiter own cancellation signalling and reaping. It may
+                            // already have reaped the child before this handler runs.
                             waitTask.cancel()
                         }
                     } else {
