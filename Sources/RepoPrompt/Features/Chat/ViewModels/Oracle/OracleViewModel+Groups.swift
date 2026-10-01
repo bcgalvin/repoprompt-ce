@@ -952,3 +952,89 @@ extension OracleViewModel {
         }
     }
 }
+
+// MARK: - Canonical group presentation
+
+extension OracleViewModel {
+    func oracleMemberPresentation(for session: ChatSession) -> OracleMemberPresentation {
+        guard let key = OracleGroupPresentation.Key(session: session),
+              isCurrentOracleProjection(session)
+        else { return .unknown }
+        return oracleGroupPresentations[key]?.member(session) ?? .unknown
+    }
+
+    func recordOracleGroupPresentation(_ document: OracleGroupDocument, invocationID: UUID? = nil) {
+        let next = OracleGroupPresentation(document: document, invocationID: invocationID)
+        if let current = oracleGroupPresentations[next.key] {
+            // A store read can win the race with the prepared callback for the same revision.
+            let beginsKnownExecution = next.revision == current.revision && next.turnID == current.turnID
+                && !current.isTerminal && current.invocationID == nil && invocationID != nil
+            guard next.revision > current.revision || beginsKnownExecution else { return }
+        }
+        oracleGroupPresentations[next.key] = next
+        pruneOracleGroupPresentations()
+    }
+
+    func receiveOracleGroupProgress(_ event: OracleProgressEvent, owner: OracleConversationOwner) {
+        let key = OracleGroupPresentation.Key(groupID: event.groupID, owner: owner)
+        guard var current = oracleGroupPresentations[key] else { return }
+        let previous = current
+        current.receive(event)
+        if current != previous { oracleGroupPresentations[key] = current }
+    }
+
+    /// One group read on opening/switching groups; never per member or text delta.
+    func loadOracleGroupPresentation(containing session: ChatSession) async {
+        guard let key = OracleGroupPresentation.Key(session: session),
+              isCurrentOracleProjection(session)
+        else { return }
+        let previous = oracleGroupPresentations[key]
+        let document = try? await AppDomainRuntimeComposition.shared.oracleConversationStore.load(
+            groupID: key.groupID,
+            owner: key.owner
+        )
+        guard !Task.isCancelled, isCurrentOracleProjection(session) else { return }
+        if let document {
+            recordOracleGroupPresentation(document)
+        } else if oracleGroupPresentations[key] == previous, previous?.invocationID == nil {
+            // A failed fresh read cannot prove the cached turn is still current. Do not, however,
+            // erase a newer runtime publication that arrived while this read was suspended.
+            oracleGroupPresentations.removeValue(forKey: key)
+        }
+    }
+
+    func finishOracleGroupPresentation(invocationID: UUID) async {
+        guard let entry = oracleGroupPresentations.first(where: { $0.value.invocationID == invocationID }) else { return }
+        var ended = entry.value
+        ended.endExecution()
+        oracleGroupPresentations[entry.key] = ended
+        // Runtime catch settlement may already have published failure/cancellation before throwing.
+        // Read independently of caller cancellation, matching the runtime's terminal publication.
+        // If publication also failed, the prepared projection stays unknown, never successful/live.
+        let store = AppDomainRuntimeComposition.shared.oracleConversationStore
+        let groupID = entry.key.groupID
+        let owner = entry.key.owner
+        let document = try? await Task.detached(priority: Task.currentPriority) {
+            try await store.load(groupID: groupID, owner: owner)
+        }.value
+        if let document {
+            recordOracleGroupPresentation(document)
+        }
+        pruneOracleGroupPresentations()
+    }
+
+    func pruneOracleGroupPresentations() {
+        let retained = Set(sessions.compactMap(OracleGroupPresentation.Key.init(session:)))
+        let next = oracleGroupPresentations.filter { retained.contains($0.key) || $0.value.invocationID != nil }
+        if next.count != oracleGroupPresentations.count { oracleGroupPresentations = next }
+    }
+
+    private func isCurrentOracleProjection(_ session: ChatSession) -> Bool {
+        sessions.contains {
+            $0.id == session.id && $0.shortID == session.shortID
+                && $0.workspaceID == session.workspaceID && $0.composeTabID == session.composeTabID
+                && $0.oracleGroupID == session.oracleGroupID && $0.oracleLaneIndex == session.oracleLaneIndex
+                && $0.oracleGroupSize == session.oracleGroupSize && $0.oracleModelRaw == session.oracleModelRaw
+        }
+    }
+}
