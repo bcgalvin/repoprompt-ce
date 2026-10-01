@@ -1,3 +1,4 @@
+import Combine
 import Foundation
 import MCP
 @testable import RepoPromptApp
@@ -463,31 +464,212 @@ final class AgentOraclePillRoutingTests: XCTestCase {
             (0 ... 4).map(OracleViewModel.oracleLabel(laneIndex:)),
             ["Oracle", "Oracle 2", "Oracle 3", "Oracle 4", "Oracle 5"]
         )
-        XCTAssertEqual(
-            AgentOraclePillLogic.laneDotState(isStreaming: true, lastAssistantContent: "Error: stale"),
-            .streaming
+    }
+
+    func testGroupedMemberStatusUsesPersistedFailureWithoutAssistantErrorText() async throws {
+        let fixture = try await makeFixture()
+        defer { fixture.cleanup() }
+        let prepared = try makeCanonicalOracleGroup(fixture: fixture).group
+        let store = AppDomainRuntimeComposition.shared.oracleConversationStore
+        try await store.create(prepared)
+        addTeardownBlock { try? await self.deleteCanonicalOracleGroup(prepared) }
+        let terminal = try terminalGroup(prepared, secondaryStatus: .failed)
+        _ = try await OracleGroupTerminalPublisher.publish(
+            terminal: terminal,
+            expectedRevision: prepared.revision,
+            store: store
         )
-        XCTAssertEqual(
-            AgentOraclePillLogic.laneDotState(
-                isStreaming: false,
-                lastAssistantContent: "partial answer\n\n--\nError:\nstatus code 502"
-            ),
-            .failed
+        var completed = makeProjection(member: prepared.members[0], group: prepared, fixture: fixture)
+        var failed = makeProjection(member: prepared.members[1], group: prepared, fixture: fixture)
+        fixture.oracleViewModel.sessions = [completed, failed]
+        let canonical = try await fixture.oracleViewModel.oracleGroupCopyPayload(containing: failed)
+        XCTAssertEqual(canonical.lanes.map(\.status), [.completed, .failed])
+        await fixture.oracleViewModel.loadOracleGroupPresentation(containing: failed)
+
+        let pill = AgentOraclePill(
+            oracleViewModel: fixture.oracleViewModel,
+            windowID: -1,
+            currentTabID: fixture.tabID,
+            activeAgentSessionID: nil,
+            activeRunID: nil
         )
-        XCTAssertEqual(
-            AgentOraclePillLogic.laneDotState(
-                isStreaming: false,
-                lastAssistantContent: "Error: status code 502 Gemini response stalled"
-            ),
-            .failed
-        )
-        XCTAssertEqual(
-            AgentOraclePillLogic.laneDotState(
-                isStreaming: false,
-                lastAssistantContent: "Review looks correct. Mention error handling."
-            ),
-            .completed
-        )
+        completed.messages = [StoredMessage(isUser: false, rawText: "Completed sibling answer")]
+        fixture.oracleViewModel.sessions = [completed, failed]
+        XCTAssertEqual(pill.memberDotState(for: completed), .completed, "loaded completed sibling")
+        completed.messages = []
+        fixture.oracleViewModel.sessions = [completed, failed]
+        XCTAssertEqual(pill.memberDotState(for: completed), .completed, "unloaded completed sibling")
+
+        let user = StoredMessage(isUser: true, rawText: "test")
+        let cases: [(String, [StoredMessage])] = [
+            ("empty", []),
+            ("user-only", [user]),
+            ("partial", [user, StoredMessage(isUser: false, rawText: "Unmarked partial answer")])
+        ]
+        for (label, messages) in cases {
+            failed.messages = messages
+            fixture.oracleViewModel.sessions = [completed, failed]
+            XCTAssertEqual(pill.memberDotState(for: failed), .failed, label)
+        }
+    }
+
+    func testGroupedStatusUsesCurrentOutcomeIdentityAndMatchingLiveEvidence() async throws {
+        let fixture = try await makeFixture()
+        defer { fixture.cleanup() }
+        let vm = fixture.oracleViewModel
+        let cases: [(OracleLaneResultStatus, OracleMemberPresentation.Status)] = [
+            (.completed, .completed), (.failed, .failed), (.cancelled, .cancelled)
+        ]
+        for (canonicalStatus, expected) in cases {
+            let prepared = try makeCanonicalOracleGroup(fixture: fixture).group
+            var member = makeProjection(member: prepared.members[1], group: prepared, fixture: fixture)
+            member.messages = [StoredMessage(isUser: false, rawText: "Error: not an outcome")]
+            vm.sessions = [member]
+            let turnID = try XCTUnwrap(prepared.turns.last?.id)
+            let started = OracleProgressEvent(
+                kind: .laneStarted, groupID: prepared.group.id, turnID: turnID,
+                laneID: prepared.members[1].laneID, sequence: 0
+            )
+            vm.recordOracleGroupPresentation(prepared)
+            vm.receiveOracleGroupProgress(started, owner: prepared.owner)
+            XCTAssertEqual(vm.oracleMemberPresentation(for: member).status, .unknown, "prepared is not live")
+
+            vm.recordOracleGroupPresentation(prepared, invocationID: UUID())
+            vm.receiveOracleGroupProgress(started, owner: prepared.owner)
+            XCTAssertEqual(vm.oracleMemberPresentation(for: member).status, .streaming)
+            vm.receiveOracleGroupProgress(OracleProgressEvent(
+                kind: .laneSettled, groupID: prepared.group.id, turnID: turnID,
+                laneID: prepared.members[1].laneID, sequence: 1, text: canonicalStatus.rawValue
+            ), owner: prepared.owner)
+            vm.receiveOracleGroupProgress(started, owner: prepared.owner)
+            XCTAssertEqual(vm.oracleMemberPresentation(for: member).status, .unknown, "settled progress is not publication")
+
+            let terminal = try terminalGroup(prepared, secondaryStatus: canonicalStatus)
+            vm.recordOracleGroupPresentation(terminal)
+            vm.receiveOracleGroupProgress(started, owner: prepared.owner)
+            vm.recordOracleGroupPresentation(prepared)
+            XCTAssertEqual(vm.oracleMemberPresentation(for: member).status, expected, "terminal beats text, live and older loads")
+            XCTAssertEqual(
+                vm.oracleMemberPresentation(for: member).errorMessage,
+                canonicalStatus == .completed ? nil : "[provider_failed] Synthetic lane failure"
+            )
+
+            let nextTurn = try OracleTurnRecord(
+                input: OracleInput(mode: .chat, userMessage: "next"),
+                state: .prepared, startedAt: terminal.updatedAt.addingTimeInterval(1)
+            )
+            let replacement = try OracleGroupDocument(
+                group: terminal.group, owner: terminal.owner, name: terminal.name,
+                revision: terminal.revision + 1, createdAt: terminal.createdAt,
+                updatedAt: nextTurn.startedAt, roster: terminal.roster, members: terminal.members,
+                turns: terminal.turns + [nextTurn]
+            )
+            let invocationID = UUID()
+            vm.recordOracleGroupPresentation(replacement, invocationID: invocationID)
+            vm.receiveOracleGroupProgress(started, owner: prepared.owner)
+            vm.recordOracleGroupPresentation(terminal)
+            XCTAssertEqual(vm.oracleMemberPresentation(for: member).status, .unknown, "new turn fences old results/events")
+            await vm.finishOracleGroupPresentation(invocationID: invocationID)
+            vm.receiveOracleGroupProgress(OracleProgressEvent(
+                kind: .laneStarted, groupID: replacement.group.id, turnID: nextTurn.id,
+                laneID: prepared.members[1].laneID, sequence: 0
+            ), owner: prepared.owner)
+            XCTAssertEqual(vm.oracleMemberPresentation(for: member).status, .unknown, "failed publication cannot stay live")
+
+            var mismatched = member
+            mismatched.shortID = "different-member"
+            vm.sessions = [mismatched]
+            XCTAssertEqual(vm.oracleMemberPresentation(for: member).status, .unknown, "replaced projection")
+            XCTAssertEqual(vm.oracleMemberPresentation(for: mismatched).status, .unknown, "member identity")
+            mismatched.workspaceID = UUID()
+            vm.sessions = [mismatched]
+            vm.recordOracleGroupPresentation(terminal)
+            XCTAssertEqual(vm.oracleMemberPresentation(for: mismatched).status, .unknown, "owner identity")
+            XCTAssertTrue(vm.oracleGroupPresentations.isEmpty, "no retained status for absent owners/groups")
+        }
+    }
+
+    func testOpenGroupPresentationObservesExceptionalOutcomesAndColdReloadWithoutProvider() async throws {
+        for expected in [OracleMemberPresentation.Status.failed, .cancelled] {
+            let fixture = try await makeFixture()
+            defer { fixture.cleanup() }
+            let prepared = try makeCanonicalOracleGroup(fixture: fixture).group
+            let store = AppDomainRuntimeComposition.shared.oracleConversationStore
+            try await store.create(prepared)
+            addTeardownBlock { try? await self.deleteCanonicalOracleGroup(prepared) }
+            let projections = prepared.members.map { makeProjection(member: $0, group: prepared, fixture: fixture) }
+            let selected = projections[1]
+            let vm = fixture.oracleViewModel
+            vm.sessions = projections
+            let pill = AgentOraclePill(
+                oracleViewModel: vm, windowID: -1, currentTabID: fixture.tabID,
+                activeAgentSessionID: nil, activeRunID: nil
+            )
+            let key = try XCTUnwrap(OracleGroupPresentation.Key(session: selected))
+            var observed: [OracleMemberPresentation.Status] = []
+            let observation = vm.$oracleGroupPresentations.sink { snapshots in
+                observed.append(snapshots[key]?.member(selected).status ?? .unknown)
+            }
+            defer { observation.cancel() }
+            await vm.loadOracleGroupPresentation(containing: selected)
+            XCTAssertEqual(pill.memberDotState(for: selected), .unknown)
+            var sawPrepared = false
+            let invocation = Task { @MainActor in
+                do {
+                    _ = try await vm.tool_chatSendWithConfiguredRosterCompletion(
+                        args: ["message": .string("next"), "chat_id": .string(selected.shortID)],
+                        promptVM: fixture.composition.promptManager,
+                        tabContext: oracleTabContext(fixture),
+                        callbacks: AppOracleGroupExecutionCallbacks(
+                            prepared: { _, _, _ in
+                                sawPrepared = true
+                                XCTAssertEqual(pill.memberDotState(for: selected), .unknown)
+                                // Cancel the invoking task, not just the thrown error: reconciliation must
+                                // still observe the runtime's published cancellation without a provider run.
+                                if expected == .cancelled {
+                                    withUnsafeCurrentTask { $0?.cancel() }
+                                    XCTAssertTrue(Task.isCancelled)
+                                    throw CancellationError()
+                                }
+                                throw OracleProjectionRoutingTestStop.afterPrepared
+                            },
+                            progress: { _ in }, laneProgress: { _, _, _ in }
+                        ),
+                        capturedProfile: AgentModelsSettingsProfile(
+                            planningModelRaw: "model-a", additionalOracleModelRaws: ["model-b"]
+                        )
+                    )
+                    XCTFail("Expected prepared callback stop")
+                } catch OracleProjectionRoutingTestStop.afterPrepared {
+                    XCTAssertEqual(expected, .failed)
+                } catch is CancellationError {
+                    XCTAssertEqual(expected, .cancelled)
+                    XCTAssertTrue(Task.isCancelled)
+                }
+            }
+            try await invocation.value
+            XCTAssertTrue(sawPrepared)
+            let loaded = try await store.load(groupID: prepared.group.id, owner: prepared.owner)
+            let canonical = try XCTUnwrap(loaded)
+            XCTAssertEqual(
+                canonical.turns.last?.results.map(\.status),
+                expected == .cancelled ? [.cancelled, .cancelled] : [.failed, .failed]
+            )
+            XCTAssertEqual(observed.first, .unknown)
+            XCTAssertEqual(observed.last, expected, "existing subscriber sees actual publication")
+            XCTAssertEqual(pill.memberDotState(for: selected), expected, "same presentation, without a reload call")
+            XCTAssertNotNil(vm.oracleMemberPresentation(for: selected).errorMessage)
+            XCTAssertTrue(vm.sessions.allSatisfy(\.messages.isEmpty), "no fabricated error transcript")
+
+            vm.sessions = []
+            XCTAssertTrue(vm.oracleGroupPresentations.isEmpty)
+            vm.sessions = projections
+            await vm.loadOracleGroupPresentation(containing: selected)
+            XCTAssertEqual(pill.memberDotState(for: selected), expected, "cold presentation uses stored latest turn")
+            try await deleteCanonicalOracleGroup(prepared)
+            await vm.loadOracleGroupPresentation(containing: selected)
+            XCTAssertEqual(pill.memberDotState(for: selected), .unknown, "missing authority cannot preserve stale success/failure")
+        }
     }
 
     func testGroupedDeleteFallsBackToProjectionCleanupWhenCanonicalDocumentIsMissing() async throws {
@@ -929,6 +1111,31 @@ final class AgentOraclePillRoutingTests: XCTestCase {
         } catch {
             XCTFail("Unexpected error \(context): \(error)")
         }
+    }
+
+    private func terminalGroup(
+        _ prepared: OracleGroupDocument,
+        secondaryStatus: OracleLaneResultStatus
+    ) throws -> OracleGroupDocument {
+        let results = try prepared.members.map { member in
+            let status: OracleLaneResultStatus = member.laneID.index == 0 ? .completed : secondaryStatus
+            return try OracleLaneResult(
+                laneIndex: member.laneID.index,
+                chatID: member.publicChatID,
+                providerID: member.model.providerID,
+                modelID: member.model.modelID,
+                status: status,
+                response: status == .completed ? "Completed sibling answer" : nil,
+                error: status == .completed ? nil : OracleLaneError(
+                    code: "provider_failed", message: "Synthetic lane failure", partialResponse: "Unmarked partial answer"
+                )
+            )
+        }
+        return try prepared.settling(OracleGroupResult(
+            groupID: prepared.group.id,
+            status: secondaryStatus == .completed ? .completed : .partialFailure,
+            oracleResults: results
+        ), finishedAt: prepared.updatedAt.addingTimeInterval(10))
     }
 
     private func makeCanonicalOracleGroup(fixture: Fixture) throws -> (owner: OracleConversationOwner, group: OracleGroupDocument) {

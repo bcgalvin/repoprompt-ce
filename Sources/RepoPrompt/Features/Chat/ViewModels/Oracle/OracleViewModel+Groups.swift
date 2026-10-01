@@ -375,6 +375,7 @@ extension OracleViewModel {
         let runtimeCallbacks = OracleGroupRuntime.Callbacks(
             prepared: { [weak self] document in
                 guard let self else { throw CancellationError() }
+                await recordOracleGroupPresentation(document, invocationID: invocationID)
                 try await restoreOracleGroupProjectionsIfNeeded(
                     document,
                     workspaceID: workspaceID,
@@ -400,7 +401,8 @@ extension OracleViewModel {
                     supervision: contextBuilderSupervision
                 )
             },
-            progress: { event in
+            progress: { [weak self] event in
+                await self?.receiveOracleGroupProgress(event, owner: owner)
                 await callbacks?.progress(event)
             }
         )
@@ -457,9 +459,14 @@ extension OracleViewModel {
                     callbacks: runtimeCallbacks
                 )
             }
+            recordOracleGroupPresentation(completion.terminalDocument)
             return completion
-        } catch let error as OracleGroupRuntime.RuntimeError {
-            throw mapOracleGroupRuntimeError(error)
+        } catch {
+            await finishOracleGroupPresentation(invocationID: invocationID)
+            if let runtimeError = error as? OracleGroupRuntime.RuntimeError {
+                throw mapOracleGroupRuntimeError(runtimeError)
+            }
+            throw error
         }
     }
 
