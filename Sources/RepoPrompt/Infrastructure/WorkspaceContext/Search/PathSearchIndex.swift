@@ -773,7 +773,7 @@ final class WorkspaceSearchRootPathIndex: @unchecked Sendable {
                         && projected.tieBreakKey == authoritative.tieBreakKey
                 }
             if shadowControl?.complete(lease, matched: matched) == true {
-                WorktreeStartupInstrumentation.recordProjectedSearchComparison(
+                WorkspaceContextStartupInstrumentation.recordProjectedSearchComparison(
                     matched: matched,
                     baseEntryCount: shadowProjection.baseEntryCount,
                     overlayEntryCount: shadowProjection.overlayEntryCount,
@@ -791,7 +791,7 @@ final class WorkspaceSearchRootPathIndex: @unchecked Sendable {
         let projected = Array(shadowProjection.entries.prefix(limit))
         let matched = authoritative == projected
         if shadowControl.complete(lease, matched: matched) {
-            WorktreeStartupInstrumentation.recordProjectedSearchComparison(
+            WorkspaceContextStartupInstrumentation.recordProjectedSearchComparison(
                 matched: matched,
                 baseEntryCount: shadowProjection.baseEntryCount,
                 overlayEntryCount: shadowProjection.overlayEntryCount,

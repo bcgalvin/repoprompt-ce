@@ -60,6 +60,25 @@ User decision, 2026-09-29. The whole remaining modularization is **at most 10 PR
 - **Critical path.** In lane P, PR 4 → PR 6 → PR 9 → PR 10 would be the critical path (≈ 43 agent-days after PR 2 at midpoints). Moving PR 9 behind PR 8 shortens that to ≈ 35.
 - **Conflict.** PR 8 rewrites the provider references that PR 9's runtime carve-outs also touch (10 runtime files [M]). Running PR 9 second removes that conflict instead of managing it.
 
+### Revised order after PR 2 (2026-10-01): seams for headless first
+
+User decision: "seam, then port." The in-app seam PRs that headless depends on move ahead of the platform moves. The ten-PR ceiling is unchanged; only the numbering after PR 2 changes.
+
+| New # | Milestone | Old # | Hard deps (merged) | Lane | Headless seam delivered |
+| --- | --- | --- | --- | --- | --- |
+| 3 | WorkspaceContext prep: invert WorkspaceContext → Features/VM edges (S8/S9/S17), read-only root-scoped snapshot (C1/C2) | 4 | 2 | P | X8 (d) |
+| 4 | MCP server prep: S5 invocation-context values, S6 `ToolInvocationContext`, admission/settlement seam (D1–D3) | 6 | 2 (soft: 3) | P | X8 (a)(b)(c) |
+| 5 | Platform: FileSystem + `IgnoreMatcher`, VCS queries, CodeMap persistence, settings core + ignore facet (B1–B4) | 3 | 2 | M | X8 (e)(f)(g) |
+| 6 | WorkspaceContext move (C3) | 5 | 3, 5 | M | — (build/test time) |
+| 7 | MCP server move (D4) | 7 | 4, 6 | M | — (build/test time) |
+| 8 | AI: contracts + providers (E1/E2) | 8 | 2 | AI | — |
+| 9 | Agent runtime prep (F1–F3) | 9 | 8 | AI | session-host contract |
+| 10 | Agent runtime move + exit (F4, X) | 10 | 7, 9 | M | — |
+
+- **DomainRuntime.** It is already its own target. Its seam is a guardrail, not a PR: no app dependency, and nothing moves out of it. That is enforced by the T1 edge matrix shipped in PR 2.
+- **Why the WorkspaceContext move still waits for Platform.** Index readiness on `7d9cecd2` shows the WorkspaceContext set (101 files) has 126 outbound file references into FileSystem and VCS. Its Features/MCP-ViewModel edges, which PR 3 removes, number about 40.
+- **Claims lists.** Each PR publishes its file claims before it moves or substantially edits any file. The PR-triage overseer sequences open contributor PRs against them.
+
 ### Soft conflicts and churn rules
 
 | Pair | Overlap | Rule |

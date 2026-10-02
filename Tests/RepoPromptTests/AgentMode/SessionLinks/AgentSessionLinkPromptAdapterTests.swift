@@ -314,6 +314,7 @@ final class AgentSessionLinkCodexPromptAdapterTests: XCTestCase {
         let viewModel: AgentModeViewModel
         let coordinator: CodexAgentModeCoordinator
         let controller: MonitorFakeCodexController
+        let dispatches: MonitorCodexDispatchRecorder
         let session: AgentModeViewModel.TabSession
         let sessionID: UUID
         let tabID: UUID
@@ -321,16 +322,29 @@ final class AgentSessionLinkCodexPromptAdapterTests: XCTestCase {
         let authRecovery: MonitorStubCodexAuthRecovery
         /// Retained: the view model holds its workspace manager weakly.
         let workspaceManager: WorkspaceManagerViewModel
+
+        var startedTurns: [String] {
+            dispatches.startedTurns
+        }
     }
 
     private func makeFixture() throws -> Fixture {
-        let controller = MonitorFakeCodexController()
+        let dispatches = MonitorCodexDispatchRecorder()
+        let controller = MonitorFakeCodexController(dispatches: dispatches)
+        var initialController: MonitorFakeCodexController? = controller
+        var startOrResumeHook: (@Sendable () async -> Void)?
         let authRecovery = MonitorStubCodexAuthRecovery()
         let tabID = UUID()
         let viewModel = AgentModeViewModel(
             testWindowID: 1,
             testWorkspacePath: FileManager.default.temporaryDirectory.path,
-            codexControllerFactory: { _, _, _, _, _, _ in controller },
+            codexControllerFactory: { _, _, _, _, _, _ in
+                // Controllers are single-use: shutdown permanently finishes their event stream.
+                let next = initialController ?? MonitorFakeCodexController(dispatches: dispatches)
+                initialController = nil
+                next.setStartOrResumeHook(startOrResumeHook)
+                return next
+            },
             connectionPolicyInstaller: { _, _, _, _, _, _, _, _, _, _, _, _, _ in },
             mcpServerEnabler: { true },
             testCodexManagedAuthRecovery: authRecovery
@@ -353,13 +367,15 @@ final class AgentSessionLinkCodexPromptAdapterTests: XCTestCase {
             tabID: tabID
         )
         inventories.append(inventory)
-        controller.setStartOrResumeHook { [weak inventory] in
+        startOrResumeHook = { [weak inventory] in
             await inventory?.republishCurrentCodexCatalog()
         }
+        controller.setStartOrResumeHook(startOrResumeHook)
         return Fixture(
             viewModel: viewModel,
             coordinator: viewModel.test_codexCoordinator,
             controller: controller,
+            dispatches: dispatches,
             session: session,
             sessionID: sessionID,
             tabID: tabID,
@@ -367,6 +383,21 @@ final class AgentSessionLinkCodexPromptAdapterTests: XCTestCase {
             authRecovery: authRecovery,
             workspaceManager: workspaceManager
         )
+    }
+
+    private func assertReplayUsedFreshController(
+        _ fixture: Fixture,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) throws {
+        let replacement = try XCTUnwrap(
+            fixture.session.codexController as? MonitorFakeCodexController,
+            file: file,
+            line: line
+        )
+        XCTAssertFalse(replacement === fixture.controller, file: file, line: line)
+        XCTAssertEqual(fixture.controller.startedTurns.count, 1, file: file, line: line)
+        XCTAssertEqual(replacement.startedTurns.count, 1, file: file, line: line)
     }
 
     private func prepareAutoWake(_ fixture: Fixture) throws -> UUID {
@@ -635,7 +666,7 @@ final class AgentSessionLinkCodexPromptAdapterTests: XCTestCase {
                 fixture.viewModel.draftRestorationEvent?.message.contains("catalog readiness was superseded") == true,
                 "unexpected restoration message: \(fixture.viewModel.draftRestorationEvent?.message ?? "nil")"
             )
-            XCTAssertTrue(fixture.controller.startedTurns.isEmpty)
+            XCTAssertTrue(fixture.startedTurns.isEmpty)
             XCTAssertTrue(fixture.controller.steeredTurns.isEmpty)
             XCTAssertNil(fixture.session.codexPendingAuthRetryTurn)
         #else
@@ -731,7 +762,7 @@ final class AgentSessionLinkCodexPromptAdapterTests: XCTestCase {
                 fixture.viewModel.draftRestorationEvent?.message.contains("catalog route changed") == true,
                 "unexpected restoration message: \(fixture.viewModel.draftRestorationEvent?.message ?? "nil")"
             )
-            XCTAssertTrue(fixture.controller.startedTurns.isEmpty)
+            XCTAssertTrue(fixture.startedTurns.isEmpty)
             XCTAssertTrue(fixture.controller.steeredTurns.isEmpty)
             XCTAssertNil(fixture.session.codexPendingAuthRetryTurn)
         #else
@@ -763,7 +794,7 @@ final class AgentSessionLinkCodexPromptAdapterTests: XCTestCase {
                 return XCTFail("Expected a definite fresh-start pre-dispatch rejection")
             }
             XCTAssertTrue(message.contains("Your message was restored"))
-            XCTAssertTrue(fixture.controller.startedTurns.isEmpty)
+            XCTAssertTrue(fixture.startedTurns.isEmpty)
             XCTAssertTrue(fixture.controller.steeredTurns.isEmpty)
             XCTAssertNil(fixture.session.codexPendingAuthRetryTurn)
             XCTAssertEqual(fixture.session.runState, .failed)
@@ -833,7 +864,7 @@ final class AgentSessionLinkCodexPromptAdapterTests: XCTestCase {
             selfCompactDispatchID: dispatchID
         )
         XCTAssertEqual(outcome, .sent)
-        XCTAssertEqual(fixture.controller.startedTurns.last, AgentSelfCompactNoteEnvelope.frame(note))
+        XCTAssertEqual(fixture.startedTurns.last, AgentSelfCompactNoteEnvelope.frame(note))
         XCTAssertTrue(fixture.controller.steeredTurns.isEmpty)
         XCTAssertEqual(fixture.session.selfCompactState.latest?.outcome, .noteAccepted)
         XCTAssertEqual(fixture.session.oversight.waitingOn, declaration)
@@ -842,7 +873,7 @@ final class AgentSessionLinkCodexPromptAdapterTests: XCTestCase {
         XCTAssertEqual(fixture.session.draftText, "unsent draft")
         XCTAssertEqual(fixture.session.selectedWorkflow, workflow)
         XCTAssertEqual(fixture.session.pendingImageAttachments, [attachment])
-        XCTAssertFalse(fixture.controller.startedTurns.contains { $0.contains("keep staged handoff") })
+        XCTAssertFalse(fixture.startedTurns.contains { $0.contains("keep staged handoff") })
     }
 
     func testInitialStartCarriesExactlyOneSupplementThenGoesQuiet() async throws {
@@ -856,7 +887,7 @@ final class AgentSessionLinkCodexPromptAdapterTests: XCTestCase {
             attachments: []
         )
 
-        let first = try XCTUnwrap(fixture.controller.startedTurns.first)
+        let first = try XCTUnwrap(fixture.startedTurns.first)
         MonitorSupplementAssertions.assertCarriesExactlyOneSupplement(first, userContent: "first turn")
         XCTAssertTrue(
             first.contains("mcp__\(MCPIntegrationHelper.repoPromptMCPServerName)__agent_session_link"),
@@ -871,7 +902,7 @@ final class AgentSessionLinkCodexPromptAdapterTests: XCTestCase {
             attachments: []
         )
 
-        let second = try XCTUnwrap(fixture.controller.startedTurns.last)
+        let second = try XCTUnwrap(fixture.startedTurns.last)
         MonitorSupplementAssertions.assertCarriesNoSupplement(second)
         MonitorSupplementAssertions.assertNotPersisted(in: fixture.session)
     }
@@ -895,7 +926,7 @@ final class AgentSessionLinkCodexPromptAdapterTests: XCTestCase {
             attachments: []
         )
 
-        let second = try XCTUnwrap(fixture.controller.startedTurns.last)
+        let second = try XCTUnwrap(fixture.startedTurns.last)
         MonitorSupplementAssertions.assertCarriesExactlyOneSupplement(second, userContent: "turn two")
         XCTAssertTrue(second.contains("count=\"2\""))
     }
@@ -918,7 +949,7 @@ final class AgentSessionLinkCodexPromptAdapterTests: XCTestCase {
             text: "after revoke",
             attachments: []
         )
-        let closing = try XCTUnwrap(fixture.controller.startedTurns.last)
+        let closing = try XCTUnwrap(fixture.startedTurns.last)
         MonitorSupplementAssertions.assertCarriesExactlyOneSupplement(closing, userContent: "after revoke")
         XCTAssertTrue(closing.contains("status=\"ended\""))
 
@@ -930,7 +961,7 @@ final class AgentSessionLinkCodexPromptAdapterTests: XCTestCase {
             attachments: []
         )
         try MonitorSupplementAssertions.assertCarriesNoSupplement(
-            XCTUnwrap(fixture.controller.startedTurns.last)
+            XCTUnwrap(fixture.startedTurns.last)
         )
     }
 
@@ -1038,12 +1069,12 @@ final class AgentSessionLinkCodexPromptAdapterTests: XCTestCase {
         // decided whether the suite passed, which is what made this read as a timing flake.
         try await AsyncTestWait.waitUntil("the queued Codex fallback entry to dispatch", timeout: 5) {
             await MainActor.run {
-                fixture.controller.startedTurns.contains { $0.hasPrefix("queued instruction") }
+                fixture.startedTurns.contains { $0.hasPrefix("queued instruction") }
             }
         }
 
         let dispatched = try XCTUnwrap(
-            fixture.controller.startedTurns.last { $0.hasPrefix("queued instruction") }
+            fixture.startedTurns.last { $0.hasPrefix("queued instruction") }
         )
         MonitorSupplementAssertions.assertCarriesExactlyOneSupplement(
             dispatched,
@@ -1182,7 +1213,7 @@ final class AgentSessionLinkCodexPromptAdapterTests: XCTestCase {
             attachments: []
         )
 
-        let original = try XCTUnwrap(fixture.controller.startedTurns.last)
+        let original = try XCTUnwrap(fixture.startedTurns.last)
         XCTAssertFalse(original.isEmpty)
         XCTAssertEqual(MonitorSupplementAssertions.fragmentCount(in: original), 1)
         XCTAssertNil(fixture.session.oversight.pendingAutoWake, "the accepted wake must be settled")
@@ -1203,8 +1234,8 @@ final class AgentSessionLinkCodexPromptAdapterTests: XCTestCase {
             sourceController: fixture.controller
         )
 
-        XCTAssertEqual(fixture.controller.startedTurns.count, 2)
-        let replay = try XCTUnwrap(fixture.controller.startedTurns.last)
+        XCTAssertEqual(fixture.startedTurns.count, 2)
+        let replay = try XCTUnwrap(fixture.startedTurns.last)
         XCTAssertFalse(replay.isEmpty)
         XCTAssertEqual(replay, original, "the settled wake must replay its exact accepted envelope")
     }
@@ -1219,7 +1250,7 @@ final class AgentSessionLinkCodexPromptAdapterTests: XCTestCase {
             text: "",
             attachments: []
         )
-        XCTAssertEqual(fixture.controller.startedTurns.count, 1)
+        XCTAssertEqual(fixture.startedTurns.count, 1)
 
         let endpoint = try AgentSessionLinkEndpointTestSupport.endpoint(
             fixture.viewModel,
@@ -1243,7 +1274,7 @@ final class AgentSessionLinkCodexPromptAdapterTests: XCTestCase {
         let didRefresh = await fixture.authRecovery.didRefresh
         XCTAssertTrue(didRefresh, "managed-auth recovery must reach its replay fence")
         XCTAssertEqual(
-            fixture.controller.startedTurns.count,
+            fixture.startedTurns.count,
             1,
             "invalid AutoWake authority must not make a second provider call"
         )
@@ -1258,7 +1289,7 @@ final class AgentSessionLinkCodexPromptAdapterTests: XCTestCase {
             text: "auth turn",
             attachments: []
         )
-        let original = try XCTUnwrap(fixture.controller.startedTurns.last)
+        let original = try XCTUnwrap(fixture.startedTurns.last)
         MonitorSupplementAssertions.assertCarriesExactlyOneSupplement(original, userContent: "auth turn")
 
         // The provider accepted the dispatch, then failed it with an auth-classified error. Managed
@@ -1278,8 +1309,9 @@ final class AgentSessionLinkCodexPromptAdapterTests: XCTestCase {
 
         let didRefresh = await fixture.authRecovery.didRefresh
         XCTAssertTrue(didRefresh, "the recovery path must have run")
-        XCTAssertEqual(fixture.controller.startedTurns.count, 2, "the turn must have been replayed")
-        let replay = try XCTUnwrap(fixture.controller.startedTurns.last)
+        XCTAssertEqual(fixture.startedTurns.count, 2, "the turn must have been replayed")
+        try assertReplayUsedFreshController(fixture)
+        let replay = try XCTUnwrap(fixture.startedTurns.last)
         XCTAssertEqual(replay, original, "the replay must be byte-identical to the accepted dispatch")
         MonitorSupplementAssertions.assertCarriesExactlyOneSupplement(replay, userContent: "auth turn")
         MonitorSupplementAssertions.assertNotPersisted(in: fixture.session)
@@ -1295,7 +1327,7 @@ final class AgentSessionLinkCodexPromptAdapterTests: XCTestCase {
             attachments: []
         )
         try MonitorSupplementAssertions.assertCarriesExactlyOneSupplement(
-            XCTUnwrap(fixture.controller.startedTurns.last),
+            XCTUnwrap(fixture.startedTurns.last),
             userContent: "withheld turn"
         )
 
@@ -1318,8 +1350,8 @@ final class AgentSessionLinkCodexPromptAdapterTests: XCTestCase {
             sourceController: fixture.controller
         )
 
-        XCTAssertEqual(fixture.controller.startedTurns.count, 2, "the turn must have been replayed")
-        let replay = try XCTUnwrap(fixture.controller.startedTurns.last)
+        XCTAssertEqual(fixture.startedTurns.count, 2, "the turn must have been replayed")
+        let replay = try XCTUnwrap(fixture.startedTurns.last)
         XCTAssertEqual(replay, "withheld turn")
         MonitorSupplementAssertions.assertCarriesNoSupplement(replay)
 
@@ -1339,7 +1371,7 @@ final class AgentSessionLinkCodexPromptAdapterTests: XCTestCase {
             text: "later turn",
             attachments: []
         )
-        let later = try XCTUnwrap(fixture.controller.startedTurns.last)
+        let later = try XCTUnwrap(fixture.startedTurns.last)
         MonitorSupplementAssertions.assertCarriesExactlyOneSupplement(later, userContent: "later turn")
         XCTAssertTrue(later.contains("status=\"ended\""), "the closing notice must remain owed")
     }
@@ -1353,7 +1385,7 @@ final class AgentSessionLinkCodexPromptAdapterTests: XCTestCase {
             text: "issue turn",
             attachments: []
         )
-        let original = try XCTUnwrap(fixture.controller.startedTurns.last)
+        let original = try XCTUnwrap(fixture.startedTurns.last)
 
         await fixture.coordinator.test_handleCodexNativeEvent(
             .serverRequestIssue(.init(
@@ -1368,10 +1400,11 @@ final class AgentSessionLinkCodexPromptAdapterTests: XCTestCase {
 
         let didRefresh = await fixture.authRecovery.didRefresh
         XCTAssertTrue(didRefresh)
-        XCTAssertEqual(fixture.controller.startedTurns.count, 2)
-        XCTAssertEqual(try XCTUnwrap(fixture.controller.startedTurns.last), original)
+        XCTAssertEqual(fixture.startedTurns.count, 2)
+        try assertReplayUsedFreshController(fixture)
+        XCTAssertEqual(try XCTUnwrap(fixture.startedTurns.last), original)
         try MonitorSupplementAssertions.assertCarriesExactlyOneSupplement(
-            XCTUnwrap(fixture.controller.startedTurns.last),
+            XCTUnwrap(fixture.startedTurns.last),
             userContent: "issue turn"
         )
     }
@@ -1385,7 +1418,7 @@ final class AgentSessionLinkCodexPromptAdapterTests: XCTestCase {
             text: "churn turn",
             attachments: []
         )
-        XCTAssertTrue(try XCTUnwrap(fixture.controller.startedTurns.last).contains("count=\"1\""))
+        XCTAssertTrue(try XCTUnwrap(fixture.startedTurns.last).contains("count=\"1\""))
 
         // A monitor is added while the failed turn is being recovered.
         await fixture.inventory.publishCodex(revision: 2, targetCount: 3)
@@ -1401,7 +1434,9 @@ final class AgentSessionLinkCodexPromptAdapterTests: XCTestCase {
             sourceController: fixture.controller
         )
 
-        let replay = try XCTUnwrap(fixture.controller.startedTurns.last)
+        XCTAssertEqual(fixture.startedTurns.count, 2)
+        try assertReplayUsedFreshController(fixture)
+        let replay = try XCTUnwrap(fixture.startedTurns.last)
         MonitorSupplementAssertions.assertCarriesExactlyOneSupplement(replay, userContent: "churn turn")
         XCTAssertTrue(replay.contains("count=\"3\""), "the replay must ship the current membership")
 
@@ -1414,7 +1449,7 @@ final class AgentSessionLinkCodexPromptAdapterTests: XCTestCase {
             attachments: []
         )
         try MonitorSupplementAssertions.assertCarriesNoSupplement(
-            XCTUnwrap(fixture.controller.startedTurns.last)
+            XCTUnwrap(fixture.startedTurns.last)
         )
     }
 
@@ -1440,8 +1475,8 @@ final class AgentSessionLinkCodexPromptAdapterTests: XCTestCase {
             text: "",
             attachments: []
         )
-        let accepted = try XCTUnwrap(fixture.controller.startedTurns.last)
-        XCTAssertEqual(fixture.controller.startedTurns.count, 1)
+        let accepted = try XCTUnwrap(fixture.startedTurns.last)
+        XCTAssertEqual(fixture.startedTurns.count, 1)
         XCTAssertNil(fixture.session.oversight.pendingAutoWake, "the accepted wake must be settled")
         XCTAssertEqual(
             fixture.viewModel.agentSessionLinkPromptClaimStore
@@ -1476,7 +1511,7 @@ final class AgentSessionLinkCodexPromptAdapterTests: XCTestCase {
         let didRefresh = await fixture.authRecovery.didRefresh
         XCTAssertTrue(didRefresh, "recovery must reach the replay fence rather than stopping before it")
         XCTAssertEqual(
-            fixture.controller.startedTurns,
+            fixture.startedTurns,
             [accepted],
             "a malformed reserved-family identity must make no second provider call and ship no raw text"
         )
@@ -2421,7 +2456,25 @@ actor MonitorFakeNativeController: NativeAgentRuntimeControlling {
 
 // MARK: - Codex fakes
 
+/// Provider calls span controller lifetimes, while each fake keeps its own connection state.
+final class MonitorCodexDispatchRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var started: [String] = []
+
+    var startedTurns: [String] {
+        lock.withLock { started }
+    }
+
+    func recordStart(_ text: String) -> Int {
+        lock.withLock {
+            started.append(text)
+            return started.count
+        }
+    }
+}
+
 final class MonitorFakeCodexController: CodexSessionControllerPassiveStubDefaults, @unchecked Sendable {
+    private let dispatches: MonitorCodexDispatchRecorder
     private let lock = NSLock()
     private var started: [String] = []
     private var steered: [String] = []
@@ -2441,7 +2494,8 @@ final class MonitorFakeCodexController: CodexSessionControllerPassiveStubDefault
     private let continuation: AsyncStream<CodexNativeSessionController.Event>.Continuation
     private let stream: AsyncStream<CodexNativeSessionController.Event>
 
-    init() {
+    init(dispatches: MonitorCodexDispatchRecorder) {
+        self.dispatches = dispatches
         var storedContinuation: AsyncStream<CodexNativeSessionController.Event>.Continuation!
         stream = AsyncStream { storedContinuation = $0 }
         continuation = storedContinuation
@@ -2516,7 +2570,8 @@ final class MonitorFakeCodexController: CodexSessionControllerPassiveStubDefault
         lock.lock()
         started.append(text)
         lock.unlock()
-        return CodexTurnStartReceipt(provisionalSubmissionID: "sub-\(started.count)")
+        let submissionNumber = dispatches.recordStart(text)
+        return CodexTurnStartReceipt(provisionalSubmissionID: "sub-\(submissionNumber)")
     }
 
     func steerUserTurn(

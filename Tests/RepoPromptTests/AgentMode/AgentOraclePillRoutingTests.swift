@@ -87,6 +87,114 @@ final class AgentOraclePillRoutingTests: XCTestCase {
         )
     }
 
+    func testCompletedOracleHistorySurvivesRunAdvanceWithinSameAgentSession() {
+        let workspaceID = UUID()
+        let tabID = UUID()
+        let agentID = UUID()
+        let previousRunID = UUID()
+        let nextRunID = UUID()
+        let previous = ChatSession(
+            workspaceID: workspaceID,
+            composeTabID: tabID,
+            agentModeSessionID: agentID,
+            agentModeRunID: previousRunID,
+            name: "Completed Oracle",
+            messages: [StoredMessage(isUser: false, rawText: "Completed answer", sequenceIndex: 0)]
+        )
+        let otherAgent = ChatSession(
+            agentModeSessionID: UUID(),
+            agentModeRunID: nextRunID,
+            name: "Other agent",
+            messages: previous.messages
+        )
+        let legacy = ChatSession(name: "Unowned", messages: previous.messages)
+        let sessions = [otherAgent, previous, legacy]
+        let eligible = AgentOraclePillLogic.eligibleSessions(
+            sessions: sessions,
+            streamingSessionIDs: [],
+            liveMessageCount: { _ in nil },
+            activeAgentSessionID: agentID,
+            activeRunID: nextRunID
+        )
+        XCTAssertEqual(eligible.map(\.id), [previous.id])
+        XCTAssertEqual(AgentOraclePillLogic.latestSession(in: eligible, streamingSessionIDs: [])?.id, previous.id)
+        XCTAssertEqual(AgentOraclePillLogic.reconciledPresentedSessionID(
+            currentSessionID: previous.id,
+            isExplicit: false,
+            currentWorkspaceID: workspaceID,
+            sameTabSessions: sessions,
+            eligibleSessions: eligible,
+            streamingSessionIDs: []
+        ), previous.id)
+        XCTAssertEqual(AgentOraclePillLogic.selectedSessionID(
+            currentSelectionID: previous.id,
+            in: eligible,
+            streamingSessionIDs: []
+        ), previous.id)
+    }
+
+    func testCurrentRunOracleDisplacesHistoryOnlyWhenRenderableOrStreaming() {
+        let agentID = UUID()
+        let runID = UUID()
+        let history = ChatSession(
+            agentModeSessionID: agentID,
+            agentModeRunID: UUID(),
+            name: "History",
+            messages: [StoredMessage(isUser: false, rawText: "Answer", sequenceIndex: 0)]
+        )
+        let current = ChatSession(agentModeSessionID: agentID, agentModeRunID: runID, name: "Current")
+        for (streamingIDs, expectedID) in [(Set<UUID>(), history.id), (Set([current.id]), current.id)] {
+            let eligible = AgentOraclePillLogic.eligibleSessions(
+                sessions: [history, current],
+                streamingSessionIDs: streamingIDs,
+                liveMessageCount: { _ in nil },
+                activeAgentSessionID: agentID,
+                activeRunID: runID
+            )
+            XCTAssertEqual(eligible.map(\.id), [expectedID])
+        }
+        let eligible = AgentOraclePillLogic.eligibleSessions(
+            sessions: [history, current],
+            streamingSessionIDs: [],
+            liveMessageCount: { $0 == current.id ? 1 : nil },
+            activeAgentSessionID: agentID,
+            activeRunID: runID
+        )
+        XCTAssertEqual(eligible.map(\.id), [current.id])
+        XCTAssertEqual(AgentOraclePillLogic.selectedSessionID(
+            currentSelectionID: history.id,
+            in: eligible,
+            streamingSessionIDs: []
+        ), current.id)
+    }
+
+    func testOracleHistoryFallbackPreservesOwnerAndLegacyPrecedence() {
+        let agentID = UUID()
+        let runID = UUID()
+        let messages = [StoredMessage(isUser: false, rawText: "Answer", sequenceIndex: 0)]
+        let history = ChatSession(agentModeSessionID: agentID, agentModeRunID: UUID(), name: "History", messages: messages)
+        let runless = ChatSession(agentModeSessionID: agentID, name: "Runless", messages: messages)
+        let unowned = ChatSession(name: "Unowned", messages: messages)
+        let other = ChatSession(agentModeSessionID: UUID(), agentModeRunID: runID, name: "Other", messages: messages)
+        let cases: [(sessions: [ChatSession], agent: UUID?, run: UUID?, expected: [UUID])] = [
+            ([history, runless, unowned, other], agentID, runID, [runless.id]),
+            ([other, unowned], agentID, runID, [unowned.id]),
+            ([other], agentID, runID, []),
+            ([history, other, unowned], nil, UUID(), [unowned.id]),
+            ([history, other, unowned], nil, runID, [other.id]),
+            ([history, other, unowned], agentID, nil, [history.id])
+        ]
+        for item in cases {
+            XCTAssertEqual(AgentOraclePillLogic.eligibleSessions(
+                sessions: item.sessions,
+                streamingSessionIDs: [],
+                liveMessageCount: { _ in nil },
+                activeAgentSessionID: item.agent,
+                activeRunID: item.run
+            ).map(\.id), item.expected)
+        }
+    }
+
     func testTranscriptActionPolicyMatchesPopoverPresentation() {
         XCTAssertEqual(
             AgentOraclePillLogic.transcriptActionPolicy(for: .standard),

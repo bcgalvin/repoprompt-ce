@@ -989,7 +989,14 @@ final class AgentSessionLinkToolServiceTests: XCTestCase {
         let first = try await targetService.execute(args: [
             "op": .string("request_attention")
         ])
-        XCTAssertEqual(first.objectValue, ["result": .string("accepted")])
+        let acceptedWithoutWaitingOn: [String: Value] = [
+            "result": .string("accepted"),
+            "hint": .string(
+                "Queued, not delivered. A dormant observer may take a minute to start."
+                    + " Set waiting_on first to explain why."
+            )
+        ]
+        XCTAssertEqual(first.objectValue, acceptedWithoutWaitingOn)
         let firstSnapshot = try XCTUnwrap(
             fixture.host.publishedPassiveNotices[fixture.observer.domainEndpoint]
         )
@@ -1048,6 +1055,23 @@ final class AgentSessionLinkToolServiceTests: XCTestCase {
         XCTAssertNotEqual(successor.occurrence, firstRequest.occurrence)
     }
 
+    func testAcceptedAttentionHintOmitsWaitingOnReminderWhenDeclared() async throws {
+        let fixture = try await makeReadReleaseFixture()
+        defer { fixture.tearDown() }
+        let targetService = fixture.routedService(from: fixture.target.domainEndpoint)
+
+        _ = try await targetService.execute(args: [
+            "op": .string("set_waiting_on"),
+            "summary": .string("Review needed")
+        ])
+        let accepted = try await targetService.execute(args: ["op": .string("request_attention")])
+
+        XCTAssertEqual(accepted.objectValue, [
+            "result": .string("accepted"),
+            "hint": .string("Queued, not delivered. A dormant observer may take a minute to start.")
+        ])
+    }
+
     func testRequestAttentionReturnsExactCapacityRefusalWithoutStoringAnOccurrence() async throws {
         let fixture = try await makeReadReleaseFixture()
         defer { fixture.tearDown() }
@@ -1071,7 +1095,8 @@ final class AgentSessionLinkToolServiceTests: XCTestCase {
             let accepted = try await fixture.routedService(from: target.domainEndpoint).execute(args: [
                 "op": .string("request_attention")
             ])
-            XCTAssertEqual(accepted.objectValue, ["result": .string("accepted")])
+            XCTAssertEqual(accepted.objectValue?["result"], .string("accepted"))
+            XCTAssertNotNil(accepted.objectValue?["hint"])
         }
 
         let observerEndpoint = fixture.observer.domainEndpoint
@@ -1139,7 +1164,8 @@ final class AgentSessionLinkToolServiceTests: XCTestCase {
             "op": .string("request_attention"),
             "observer_session_id": .string(secondObserver.sessionID.uuidString)
         ])
-        XCTAssertEqual(selected.objectValue, ["result": .string("accepted")])
+        XCTAssertEqual(selected.objectValue?["result"], .string("accepted"))
+        XCTAssertNotNil(selected.objectValue?["hint"])
         XCTAssertEqual(
             fixture.host.publishedPassiveNotices[secondObserver.domainEndpoint]?
                 .attentionRequests.map(\.targetSessionID),
@@ -2747,6 +2773,7 @@ final class AgentSessionLinkToolServiceTests: XCTestCase {
                 status: .idle,
                 board: .empty,
                 idleForSend: true,
+                waitingOn: waitingOn,
                 pendingInteractionKind: nil,
                 latestVisibleAssistantPreview: nil,
                 visibleRowCount: 1,

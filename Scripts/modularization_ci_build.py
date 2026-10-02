@@ -12,6 +12,8 @@ from pathlib import Path
 
 from modularization_ci_artifact import test_source_hashes
 from swift_imports import sources_import_module
+from ci_test_coverage import listed_tests, validate_targets
+import hashlib
 
 ROOT = Path(__file__).resolve().parent.parent
 BASELINE = ROOT / 'docs/migrations/build-modularization/build-ratchets.json'
@@ -97,12 +99,22 @@ def main() -> int:
     if listing.returncode:
         print(listing.stderr, file=sys.stderr)
         return listing.returncode
-    if not any('/' in line for line in listing.stdout.splitlines()):
-        print('test listing is empty after build; refusing to publish CI artifact', file=sys.stderr)
+    try:
+        tests = listed_tests(listing.stdout)
+        manifest = json.loads(subprocess.run(['swift', 'package', 'dump-package'], cwd=ROOT,
+                              check=True, capture_output=True, text=True).stdout)
+        targets = sorted(target['name'] for target in manifest['targets'] if target['type'] == 'test')
+        validate_targets(tests, targets)
+    except (ValueError, KeyError, subprocess.CalledProcessError) as error:
+        print(f'test target/listing coverage failed: {error}', file=sys.stderr)
         return 1
     destination = ROOT / '.build/modularization/ci-test-list.txt'
     destination.parent.mkdir(parents=True, exist_ok=True)
-    destination.write_text(listing.stdout, encoding='utf-8')
+    destination.write_text('\n'.join(tests) + '\n', encoding='utf-8')
+    (destination.parent / 'test-targets.json').write_text(json.dumps({
+        'targets': targets, 'package_sha256': hashlib.sha256((ROOT / 'Package.swift').read_bytes()).hexdigest(),
+    }, sort_keys=True) + '\n')
+    print(f'Expected coverage: {len(tests)} tests across {len(targets)} test targets: {targets}', flush=True)
     (destination.parent / 'test-source-sha256.json').write_text(
         json.dumps({'source_sha256': test_source_hashes(ROOT)}, sort_keys=True) + '\n', encoding='utf-8')
     print(f'captured {len(listing.stdout.splitlines())} test-list lines at {destination}', flush=True)

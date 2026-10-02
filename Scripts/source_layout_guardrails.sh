@@ -792,6 +792,7 @@ allowed_tracked_docs=(
   "docs/architecture/actionable-macos-notifications.md"
   "docs/architecture/agent-session-oversight-auto-wake.md"
   "docs/architecture/apple-identity-migration.md"
+  "docs/architecture/ci-test-gates.md"
   "docs/architecture/codex-app-server-schema-gate.md"
   "docs/architecture/context-composer.md"
   "docs/architecture/headless-mcp-runtime.md"

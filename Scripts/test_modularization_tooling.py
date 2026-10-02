@@ -217,11 +217,12 @@ class CatalogTests(unittest.TestCase):
         listing = subprocess.CompletedProcess([], 0, stdout='RepoPromptTests.Example/testOne\n')
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
+            (root / 'Package.swift').write_text('// fixture manifest')
             baseline = root / 'baseline.json'
             baseline.write_text(json.dumps({'typecheck': {'function_bodies_1000ms': 0,
                                                           'expressions_500ms': 0}}))
             with mock.patch.object(ci_build, 'ROOT', root), mock.patch.object(ci_build, 'BASELINE', baseline), \
-                    mock.patch.object(ci_build.subprocess, 'run', side_effect=[subprocess.CompletedProcess([], 0), listing]) as run, \
+                    mock.patch.object(ci_build.subprocess, 'run', side_effect=[subprocess.CompletedProcess([], 0), listing, subprocess.CompletedProcess([], 0, stdout=json.dumps({'targets': [{'type': 'test', 'name': 'RepoPromptTests'}]}))]) as run, \
                     mock.patch.object(ci_build.subprocess, 'Popen', return_value=BuildProcess()), \
                     mock.patch.object(ci_build, 'sources_import_module', return_value=False), \
                     mock.patch.dict('os.environ', {'TYPECHECK_RATCHET_ENFORCE': '1'}):
@@ -238,16 +239,17 @@ class CatalogTests(unittest.TestCase):
         listing = subprocess.CompletedProcess([], 0, stdout='RepoPromptTests.Example/testOne\n')
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
+            (root / 'Package.swift').write_text('// fixture manifest')
             baseline = root / 'baseline.json'
             baseline.write_text(json.dumps({'typecheck': {'function_bodies_1000ms': 0,
                                                           'expressions_500ms': 0}}))
             with mock.patch.object(ci_build, 'ROOT', root), mock.patch.object(ci_build, 'BASELINE', baseline), \
-                    mock.patch.object(ci_build.subprocess, 'run', return_value=listing) as run, \
+                    mock.patch.object(ci_build.subprocess, 'run', side_effect=[listing, subprocess.CompletedProcess([], 0, stdout=json.dumps({'targets': [{'type': 'test', 'name': 'RepoPromptTests'}]}))]) as run, \
                     mock.patch.object(ci_build.subprocess, 'Popen', return_value=BuildProcess()), \
                     mock.patch.object(ci_build, 'sources_import_module', return_value=False), \
                     mock.patch.dict('os.environ', {'TYPECHECK_RATCHET_ENFORCE': '0'}):
                 self.assertEqual(ci_build.main(), 0)
-                self.assertEqual(run.call_count, 1)
+                self.assertEqual(run.call_count, 2)
 
     def test_import_scanner_handles_backticks_multiline_attributes_and_testing(self) -> None:
         source = ('import `AppKit`\n@_spi(\n Private\n) import `Testing`\n'
@@ -293,10 +295,26 @@ class CatalogTests(unittest.TestCase):
     def test_workflow_uses_full_main_module_coverage_and_supported_cache_inputs(self) -> None:
         main = (SCRIPT_DIR.parent / '.github/workflows/ci-main.yml').read_text()
         ci = (SCRIPT_DIR.parent / '.github/workflows/ci.yml').read_text()
-        self.assertIn('modularization_affected_tests.py --all', main)
+        self.assertIn('modularization_affected_tests.py --all', ci)
+        self.assertNotIn('matrix.module', main)
+        self.assertIn('name: Style', ci)
         cache_save = ci.split('uses: actions/cache/save@v6', 1)[1].split('\n      - name:', 1)[0]
         self.assertNotIn('compression-level:', cache_save)
         self.assertNotIn('if-no-files-found:', cache_save)
+
+    def test_required_style_is_final_and_mac_job_budget_is_five(self) -> None:
+        ci = (SCRIPT_DIR.parent / '.github/workflows/ci.yml').read_text()
+        final = ci.split('  style:', 1)[1].split('  secret-scan:', 1)[0]
+        self.assertIn('name: Style', final)
+        self.assertIn('needs: [build-test-bundles, build-and-test, secret-scan]', final)
+        self.assertIn('if: always()', final)
+        self.assertIn('ci_test_coverage.py', final)
+        self.assertEqual(ci.count('runs-on: macos-26'), 2)  # one shared job + 4 matrix children
+        self.assertIn('shard: [1, 2, 3, 4]', ci)
+        self.assertNotIn('continue-on-error', ci)
+        for line in ci.splitlines():
+            if line.startswith('    name:'):
+                self.assertNotIn('${{', line)
 
     def test_ci_typecheck_warning_classification(self) -> None:
         warning = '/checkout/Sources/RepoPrompt/App/X.swift:3:4: warning: expression took 502ms to type-check'

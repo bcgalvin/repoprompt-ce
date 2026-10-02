@@ -1521,20 +1521,30 @@ class WorkspaceFilesViewModel: ObservableObject {
     #endif
 
     private func subscribeToWorkspaceStoreDeltaEvents() {
-        workspaceStoreDeltaBridgeTask = Task { [weak self] in
-            guard let self else { return }
-            let stream = await workspaceFileContextStore.appliedIndexEvents()
+        // Capture the store (not self) and re-acquire self per event so a
+        // closed window's view model is released once nothing else retains it;
+        // deinit then cancels this task, which finishes the stream iterator.
+        // The per-iteration `guard let self` is load-bearing: buffered events
+        // can still be delivered after cancellation, and must not reach a dead
+        // VM. These tasks are only ever cancelled from deinit — never cancel
+        // them while the VM is alive (a mid-apply cancel could half-apply a
+        // projection).
+        let store = workspaceFileContextStore
+        workspaceStoreDeltaBridgeTask = Task { [weak self, store] in
+            let stream = await store.appliedIndexEvents()
             for await event in stream {
+                guard let self else { return }
                 await handleWorkspaceAppliedIndexEvent(event)
             }
         }
     }
 
     private func subscribeToCodemapMarkerReadinessUpdates() {
-        codemapMarkerReadinessTask = Task { [weak self] in
-            guard let self else { return }
-            let stream = await workspaceFileContextStore.codemapMarkerReadinessUpdates()
+        let store = workspaceFileContextStore
+        codemapMarkerReadinessTask = Task { [weak self, store] in
+            let stream = await store.codemapMarkerReadinessUpdates()
             for await event in stream {
+                guard let self else { return }
                 handleCodemapMarkerReadiness(event)
             }
         }
@@ -12357,30 +12367,6 @@ extension WorkspaceFilesViewModel {
                     }
                 }
             }
-        }
-    }
-}
-
-enum FileManagerError: Error, LocalizedError {
-    case failedToLoadFolder(Error)
-    case failedToLoadFile(Error)
-    case fileSystemServiceNotFound
-    case failedToLoadContent
-    // New: richer, contextual variant used by MCP tools and FS ops
-    case fileSystemServiceNotFoundWithContext(String)
-
-    var errorDescription: String? {
-        switch self {
-        case let .failedToLoadFolder(err):
-            "Failed to load folder: \(err.localizedDescription)"
-        case let .failedToLoadFile(err):
-            "Failed to load file: \(err.localizedDescription)"
-        case .fileSystemServiceNotFound:
-            "No matching workspace folder for the requested path."
-        case .failedToLoadContent:
-            "Failed to load content."
-        case let .fileSystemServiceNotFoundWithContext(context):
-            context
         }
     }
 }

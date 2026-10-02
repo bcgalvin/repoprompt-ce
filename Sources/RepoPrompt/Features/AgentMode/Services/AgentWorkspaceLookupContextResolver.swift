@@ -52,7 +52,7 @@ struct AgentWorkspaceLookupContextSource: Equatable {
     }
 
     static func worktreeBindingFingerprint(_ bindings: [AgentSessionWorktreeBinding]) -> String {
-        worktreeBindingFingerprint(.hydrated(bindings))
+        WorkspaceSessionBindingFingerprint.make(bindings)
     }
 
     static func worktreeBindingFingerprint(_ state: AgentSessionWorktreeBindingState) -> String {
@@ -64,22 +64,7 @@ struct AgentWorkspaceLookupContextSource: Equatable {
         case .unavailable:
             "unavailable"
         case let .hydrated(bindings):
-            bindings
-                .map { binding in
-                    [
-                        binding.repositoryID,
-                        binding.repoKey,
-                        StandardizedPath.absolute((binding.logicalRootPath as NSString).expandingTildeInPath),
-                        binding.worktreeID,
-                        StandardizedPath.absolute((binding.worktreeRootPath as NSString).expandingTildeInPath),
-                        binding.commonGitDir.map(StandardizedPath.absolute) ?? "",
-                        binding.isMainWorktree.map { String($0) } ?? "",
-                        binding.branch ?? "",
-                        binding.head ?? ""
-                    ].joined(separator: "\u{1F}")
-                }
-                .sorted()
-                .joined(separator: "\u{1E}")
+            WorkspaceSessionBindingFingerprint.make(bindings)
         }
     }
 }
@@ -366,16 +351,4 @@ enum AgentWorkspaceLookupContextResolver {
     }
 }
 
-enum AgentWorkspaceLookupContextResolutionError: LocalizedError {
-    case unavailableProjection
-    case unknownBindingState
-
-    var errorDescription: String? {
-        switch self {
-        case .unavailableProjection:
-            "The Agent session worktree projection is unavailable. The operation stopped rather than falling back to the canonical checkout."
-        case .unknownBindingState:
-            "The Agent session worktree bindings are not hydrated or are unavailable. The operation stopped rather than falling back to the canonical checkout."
-        }
-    }
-}
+typealias AgentWorkspaceLookupContextResolutionError = WorkspaceLookupContextResolutionError

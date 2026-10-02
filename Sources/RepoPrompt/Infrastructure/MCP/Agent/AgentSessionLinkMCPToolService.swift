@@ -209,10 +209,11 @@ struct AgentSessionLinkMCPToolService {
             targetEndpoint: targetEndpoint,
             observerSessionID: observerSessionID
         ) {
-        case .accepted:
-            // Deliberately identical for a newly stored occurrence and a duplicate that is already
-            // pending. The target gets no reverse receipt or observer-activity side channel.
-            return .object(["result": .string("accepted")])
+        case let .accepted(hasWaitingOn):
+            // Queued is not delivered; this self-scoped hint reveals no observer wake state.
+            let hint = "Queued, not delivered. A dormant observer may take a minute to start."
+                + (hasWaitingOn ? "" : " Set waiting_on first to explain why.")
+            return .object(["result": .string("accepted"), "hint": .string(hint)])
         case .atCapacity:
             return .object([
                 "result": .string("attention_queue_full"),

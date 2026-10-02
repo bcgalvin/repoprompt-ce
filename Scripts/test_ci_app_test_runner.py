@@ -62,6 +62,11 @@ class TransferredBuildTests(unittest.TestCase):
             for name in ('app-source-sha256.json', 'index-check.json'):
                 (metadata / name).write_text(json.dumps({'source_sha256': {'App/Main.swift': digest}}))
             (metadata / 'ci-test-list.txt').write_text('RepoPromptTests.ExampleTests/testOne\n')
+            (source / 'Package.swift').write_text('// fixture manifest')
+            (metadata / 'test-targets.json').write_text(json.dumps({
+                'targets': ['RepoPromptTests'],
+                'package_sha256': hashlib.sha256((source / 'Package.swift').read_bytes()).hexdigest(),
+            }))
             (metadata / 'test-source-sha256.json').write_text(
                 json.dumps({'source_sha256': {'RepoPromptTests/ExampleTests.swift':
                                              hashlib.sha256(test_source.read_bytes()).hexdigest()}}))
@@ -83,6 +88,8 @@ class TransferredBuildTests(unittest.TestCase):
             (checkout / 'source.swift').write_text('not transferred')
             archive = Path(temporary) / 'build.tar.gz'
             artifact.pack(source, archive)
+            copy.mkdir()
+            (copy / 'Package.swift').write_text('// fixture manifest')
             (copy / 'Sources/RepoPrompt/App').mkdir(parents=True)
             (copy / 'Sources/RepoPrompt/App/Main.swift').write_text('struct Main {}\n')
             copied_test = copy / 'Tests/RepoPromptTests/ExampleTests.swift'

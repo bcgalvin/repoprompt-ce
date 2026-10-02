@@ -67,7 +67,7 @@ actor WorkspaceRootMaterializationHintEvaluator {
                     ? nil
                     : .compatibilityMismatch
             #if DEBUG
-                WorktreeStartupInstrumentation.recordDeltaCompatibilityEvaluation(
+                WorkspaceContextStartupInstrumentation.recordDeltaCompatibilityEvaluation(
                     correlationID: hint.correlationID,
                     evaluation: compatibilityEvaluation,
                     policyCanonicalizationComparison: GitWorkspacePolicyCanonicalizationDiagnostics.comparison(

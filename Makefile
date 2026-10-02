@@ -138,6 +138,8 @@ new-module:
 	python3 Scripts/modularization_new_module.py --name "$(NAME)" --family "$(FAMILY)"
 
 conductor-selftest:
+	python3 Scripts/test_ci_test_coverage.py
+	python3 Scripts/test_ci_resolve_packages.py
 	python3 Scripts/test_codex_app_server_schema.py
 	python3 Scripts/test_debug_app_process.py
 	python3 Scripts/test_ci_app_test_runner.py
@@ -156,6 +158,8 @@ conductor-selftest:
 
 ci-app-test-runner-selftest:
 	python3 Scripts/test_ci_app_test_runner.py
+	python3 Scripts/test_ci_test_coverage.py
+	python3 Scripts/test_ci_resolve_packages.py
 
 release-selftest:
 	python3 Scripts/test_release_tooling.py

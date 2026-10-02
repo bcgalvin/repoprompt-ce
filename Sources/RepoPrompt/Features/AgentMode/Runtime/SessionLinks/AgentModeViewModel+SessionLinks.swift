@@ -832,6 +832,14 @@ extension AgentModeViewModel {
     /// This is the sole mutation boundary for `monitorPillPropsByEndpoint`. The status-pill snapshot
     /// is synchronized before the notification so every consumer can immediately re-read the same
     /// completed state. Equal replacements are true no-ops and publish nothing.
+    ///
+    /// The snapshot's only storage-derived field is `monitor`. The full snapshot (Model Router
+    /// availability, execution location, ...) is rebuilt only when the published `monitor` differs
+    /// from its live derivation or belongs to another tab — which covers a change to the current
+    /// tab's entry, a rebind whose new incarnation has no entry yet, and any current-tab presentation
+    /// change still waiting on its own coalesced UI refresh. Otherwise the published snapshot is
+    /// already the completed state, and the rebuild is skipped for every other endpoint's refresh.
+    /// The notification is posted for every changed transaction exactly as before.
     private func agentSessionLinkMutateProjectionStorage(
         _ mutation: (inout [DomainAgentSessionLinkEndpointIdentity: AgentMonitorPillProps]) -> Void
     ) {
@@ -839,7 +847,7 @@ extension AgentModeViewModel {
         mutation(&updated)
         guard updated != monitorPillPropsByEndpoint else { return }
         monitorPillPropsByEndpoint = updated
-        syncStatusPillsUIState()
+        syncStatusPillsUIStateIfMonitorStale()
         NotificationCenter.default.post(
             name: .agentSessionLinkOverseerProjectionDidChange,
             object: self

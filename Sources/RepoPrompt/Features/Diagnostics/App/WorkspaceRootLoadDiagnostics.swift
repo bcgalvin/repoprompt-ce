@@ -100,4 +100,14 @@ import RepoPromptWorkspaceCore
             return context
         }
     }
+
+    struct AppWorkspaceRootLoadFieldProvider: WorkspaceRootLoadFieldProviding {
+        func rootRecordCreatedFields(forPath path: String) -> [String: String] {
+            WorkspaceRootLoadDiagnostics.rootRecordCreatedFields(forPath: path)
+        }
+
+        func firstPreparedChunkFields(forPath path: String) -> [String: String] {
+            WorkspaceRootLoadDiagnostics.firstPreparedChunkFields(forPath: path)
+        }
+    }
 #endif

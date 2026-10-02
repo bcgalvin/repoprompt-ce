@@ -44,10 +44,18 @@ enum WindowStateCompositionFactory {
         codexModelPollingService: CodexModelPollingService = .shared,
         modelRouterRuntime injectedModelRouterRuntime: AgentTaskRouterRuntime? = nil
     ) -> WindowStateComposition {
+        WorkspaceContextStartupInstrumentation.install(AppWorkspaceStartupEventRecorder())
+        WorkspaceExternalReadWorkHooks.install(AppWorkspaceExternalReadWorkRecorder())
+        #if DEBUG
+            WorkspacePreparationInstrumentation.install(AppWorkspacePreparationRecorderProvider())
+            WorkspaceRootLoadFieldHooks.install(AppWorkspaceRootLoadFieldProvider())
+            WorkspaceApplyEditsRebaseProbeHooks.install(AppWorkspaceApplyEditsRebaseProbeRecorder())
+        #endif
         let modelRouterRuntime = injectedModelRouterRuntime ?? WindowStatesManager.shared.modelRouterRuntime
         // 1) Workspace file context store + visible file-tree UI adapter
         #if DEBUG
             let defaultWorkspaceFileContextStore = WorkspaceFileContextStore(
+                startupFeatureFlags: .current(),
                 enableCatalogShardShadowValidation: false,
                 nonGitCodeMapsEnabled: settingsStore.nonGitCodeMapsEnabled,
                 restorePerfRecorder: AppWorkspaceRestorePerfRecorder(),
@@ -55,6 +63,7 @@ enum WindowStateCompositionFactory {
             )
         #else
             let defaultWorkspaceFileContextStore = WorkspaceFileContextStore(
+                startupFeatureFlags: .current(),
                 nonGitCodeMapsEnabled: settingsStore.nonGitCodeMapsEnabled,
                 restorePerfRecorder: AppWorkspaceRestorePerfRecorder(),
                 perfRecorder: AppAgentModePerfRecorder()

@@ -1,7 +1,7 @@
 name: CI (main)
 
 # Main-only checks, kept out of the PR workflow so PRs show no skipped rows:
-# per-module executor parity tests and the Sentry-enabled build.
+# Sentry-enabled build/privacy checks. All module parity tests now gate PRs in CI/Style.
 on:
   push:
     branches:
@@ -16,61 +16,10 @@ permissions:
   contents: read
 
 jobs:
-  select-module-tests:
-    name: Select Affected Module Tests
-    runs-on: ubuntu-latest
-    outputs:
-      matrix: ${{ steps.select.outputs.matrix }}
-      has_modules: ${{ steps.select.outputs.has_modules }}
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v6
-        with:
-          persist-credentials: false
-          fetch-depth: 0
-
-      - name: Select all app-free test targets
-        id: select
-        shell: bash
-        run: |
-          set -euo pipefail
-          matrix="$(python3 Scripts/modularization_affected_tests.py --all)"
-          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
-          if [[ "$matrix" == '{"include":[]}' ]]; then
-            echo 'has_modules=false' >> "$GITHUB_OUTPUT"
-          else
-            echo 'has_modules=true' >> "$GITHUB_OUTPUT"
-          fi
-
-  module-tests:
-    name: Module Tests (${{ matrix.module }})
-    needs: select-module-tests
-    if: needs.select-module-tests.outputs.has_modules == 'true'
-    runs-on: macos-26
-    timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      matrix: ${{ fromJson(needs.select-module-tests.outputs.matrix) }}
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v6
-        with:
-          persist-credentials: false
-
-      - name: Restore SwiftPM dependency sources only
-        uses: actions/cache@v6
-        with:
-          path: |
-            .build/checkouts
-            .build/repositories
-          key: ${{ runner.os }}-${{ runner.arch }}-swiftpm-sources-${{ hashFiles('Package.swift', 'Package.resolved') }}
-
-      - name: Run owning module tests through conductor
-        run: ./conductor test --module ${{ matrix.module }}
-
   sentry-enabled-build:
     name: Sentry-enabled Build
     runs-on: macos-26
+    timeout-minutes: 45
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
@@ -87,12 +36,27 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-${{ runner.arch }}-swiftpm-sentry-
 
+      - name: Cache checksum-verified SwiftPM binary artifacts
+        uses: actions/cache@v6
+        with:
+          path: |
+            .build/artifacts
+            .build/swiftbuild/artifacts
+            Packages/RepoPromptAgentProviders/.build/artifacts
+            ~/Library/Caches/org.swift.swiftpm/artifacts
+          key: ${{ runner.os }}-${{ runner.arch }}-swiftpm-binaries-v1-${{ hashFiles('Package.resolved', 'Packages/RepoPromptAgentProviders/Package.resolved') }}
+
+      - name: Resolve Sentry dependency downloads with bounded retries
+        env:
+          REPOPROMPT_ENABLE_SENTRY: "1"
+        run: python3 Scripts/ci_resolve_packages.py
+
       - name: Build app product with Sentry SDK linked
         env:
           REPOPROMPT_ENABLE_SENTRY: "1"
-        run: ./conductor swift-build --product RepoPrompt
+        run: ./conductor swift-build --product RepoPrompt --full-log
 
       - name: Test serialized Sentry privacy boundary
         env:
           REPOPROMPT_ENABLE_SENTRY: "1"
-        run: ./conductor test --filter SentryTelemetryPrivacyTests
+        run: ./conductor test --filter SentryTelemetryPrivacyTests --full-log

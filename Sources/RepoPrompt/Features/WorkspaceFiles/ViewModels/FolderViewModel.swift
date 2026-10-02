@@ -879,3 +879,15 @@ enum CheckboxState: Equatable {
     case unchecked
     case mixed
 }
+
+extension FrozenFolderRecord {
+    init(from vm: FolderViewModel) {
+        self.init(
+            name: vm.name,
+            relativePath: vm.relativePath,
+            fullPath: vm.standardizedFullPath,
+            rootPath: vm.rootPath,
+            displayName: vm.name
+        )
+    }
+}

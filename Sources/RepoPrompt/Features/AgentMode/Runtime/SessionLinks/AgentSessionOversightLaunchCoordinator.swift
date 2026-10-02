@@ -746,10 +746,15 @@ final class AgentSessionOversightLaunchCoordinator {
             switch candidate.restorationReadiness {
             case .authoritative:
                 resolved[sessionID] = candidate
-            case .terminal:
-                // A payload that will never load. Reauthorizing against it would grant oversight of a
-                // transcript this process never read.
-                return .terminal(.hydrationFailed)
+            case let .terminal(_, failure):
+                switch failure {
+                case .missingPayload:
+                    return .terminal(.hydrationFailed)
+                case .loadFailed, .sourceRevisionSuperseded:
+                    // A failed or superseded load proves no authority, not that the saved intent is gone.
+                    // Still inspect the other endpoint for a proven terminal reason.
+                    continue
+                }
             case .pending, .unbound:
                 return .wait
             }
@@ -905,10 +910,57 @@ final class AgentSessionOversightLaunchCoordinator {
                 entries[pair] = settled
                 return
             }
+            // A hydration outcome can supersede the classified proof inside the shared path's
+            // authority hops. That refusal grants nothing, but is not proof the saved pair is gone.
+            if case .failed(.rebinding) = outcome,
+               let host = delegate.launchCoordinatorHost,
+               transientHydrationDrift(from: proof, candidates: host.agentSessionLinkCandidates())
+            {
+                // The launch reservation budget is spent; retain intent for the next launch.
+                settled.state = .waiting
+                entries[pair] = settled
+                return
+            }
             settled.state = .waiting
             entries[pair] = settled
             await retire(pair: pair, reason: .activationFailed)
         }
+    }
+
+    private func transientHydrationDrift(
+        from proof: AgentSessionOversightRestorationProof,
+        candidates: [AgentSessionLinkEndpointCandidate]
+    ) -> Bool {
+        let observers = candidates.filter { $0.sessionID == proof.observerEndpoint.sessionID }
+        let targets = candidates.filter { $0.sessionID == proof.targetEndpoint.sessionID }
+        guard observers.count == 1, targets.count == 1,
+              let observer = observers.first, let target = targets.first,
+              observer.domainEndpoint == proof.observerEndpoint,
+              target.domainEndpoint == proof.targetEndpoint,
+              observer.isTopLevel, !observer.isClosing,
+              observer.roleAllowsOutboundMonitoring,
+              !observer.isMCPControlled, !observer.isMCPOriginated,
+              target.isTopLevel, !target.isClosing
+        else {
+            return false
+        }
+        func isTransient(
+            _ current: AgentSessionRestorationReadiness,
+            insteadOf expected: AgentSessionRestorationReadiness
+        ) -> Bool {
+            guard case let .terminal(token, failure) = current,
+                  token == expected.bindingToken
+            else { return false }
+            return switch failure {
+            case .loadFailed, .sourceRevisionSuperseded: true
+            case .missingPayload: false
+            }
+        }
+        let observerTransient = isTransient(observer.restorationReadiness, insteadOf: proof.observerReadiness)
+        let targetTransient = isTransient(target.restorationReadiness, insteadOf: proof.targetReadiness)
+        return (observerTransient || observer.restorationReadiness == proof.observerReadiness)
+            && (targetTransient || target.restorationReadiness == proof.targetReadiness)
+            && (observerTransient || targetTransient)
     }
 
     /// Terminalizes one entry and removes exactly its own durable token.

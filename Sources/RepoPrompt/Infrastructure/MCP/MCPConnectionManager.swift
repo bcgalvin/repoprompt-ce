@@ -11196,7 +11196,9 @@ actor ServerNetworkManager {
         }
 
         if let liveAffinity = preferredExpectedPIDRunAffinity(for: clientName, clientPid: clientPid) {
-            await applyLiveRunAffinity(liveAffinity, clientName: clientName, connectionID: connectionID, reason: "expected-pid")
+            connectionLog(
+                "Expected-PID fallback matched established run \(liveAffinity.runID); refusing implicit run mapping without a pending per-connection policy"
+            )
             return
         }
 
@@ -15118,27 +15120,36 @@ actor ServerNetworkManager {
         let displayName = clientIdentifier(forConnection: connectionID) ?? "unknown"
         let stableKey = MCPClientIdentity.storageKey(displayName)
 
-        let peerIdentity: (observedProcessID: Int?, claimedProcessID: Int?, fingerprint: String?)
+        let peerIdentity: (
+            observedProcessID: Int?,
+            claimedProcessID: Int?,
+            fingerprint: String?,
+            verificationFailure: DomainClientPrincipalVerificationFailure?
+        )
         #if DEBUG
             switch debugDomainPeerIdentityByConnectionID[connectionID] {
             case let .verified(processID, fingerprint):
-                peerIdentity = (processID, processID, fingerprint)
+                peerIdentity = (processID, processID, fingerprint, nil)
             case .unverified:
-                peerIdentity = (nil, bootstrapClaimedPIDByConnectionID[connectionID], nil)
+                peerIdentity = (nil, bootstrapClaimedPIDByConnectionID[connectionID], nil, nil)
             case nil:
                 let processID = bootstrapObservedPeerPIDByConnectionID[connectionID]
+                let verification = processID.map(Self.peerExecutableVerification)
                 peerIdentity = (
                     processID,
                     bootstrapClaimedPIDByConnectionID[connectionID],
-                    processID.flatMap(Self.verifiedExecutableFingerprint)
+                    verification?.fingerprint,
+                    verification?.failure
                 )
             }
         #else
             let processID = bootstrapObservedPeerPIDByConnectionID[connectionID]
+            let verification = processID.map(Self.peerExecutableVerification)
             peerIdentity = (
                 processID,
                 bootstrapClaimedPIDByConnectionID[connectionID],
-                processID.flatMap(Self.verifiedExecutableFingerprint)
+                verification?.fingerprint,
+                verification?.failure
             )
         #endif
         let kind: DomainClientPrincipalKind = policy.purpose == .unknown ? .appProxy : .runScoped
@@ -15213,7 +15224,8 @@ actor ServerNetworkManager {
             runID: runID,
             provider: stableKey,
             verifiedIdentityFingerprint: peerIdentity.fingerprint,
-            claimedProcessID: peerIdentity.claimedProcessID.map(Int32.init)
+            claimedProcessID: peerIdentity.claimedProcessID.map(Int32.init),
+            verificationFailure: peerIdentity.verificationFailure
         )
         return DomainToolInvocationSecurityContext(
             principal: principal,
@@ -15231,17 +15243,25 @@ actor ServerNetworkManager {
     }
 
     /// Binds a kernel-authenticated peer PID to the executable identity currently on disk.
-    /// Display names never participate. Replacing the executable changes the inode and fingerprint.
-    private nonisolated static func verifiedExecutableFingerprint(_ processID: Int) -> String? {
+    /// Display names never participate. Replacing the executable changes the inode and fingerprint;
+    /// deleting it, as an app update does to a running helper's old bundle, leaves the peer unverifiable.
+    private nonisolated static func peerExecutableVerification(
+        _ processID: Int
+    ) -> (fingerprint: String?, failure: DomainClientPrincipalVerificationFailure?) {
         var buffer = [CChar](repeating: 0, count: 4096)
-        guard proc_pidpath(pid_t(processID), &buffer, UInt32(buffer.count)) > 0 else { return nil }
+        guard proc_pidpath(pid_t(processID), &buffer, UInt32(buffer.count)) > 0 else {
+            return (nil, errno == ENOENT ? .executableMissing : nil)
+        }
         let path = String(cString: buffer)
         var info = stat()
-        guard lstat(path, &info) == 0 else { return nil }
+        guard lstat(path, &info) == 0 else {
+            return (nil, errno == ENOENT ? .executableMissing : nil)
+        }
         let material = "\(URL(fileURLWithPath: path).standardizedFileURL.path)|\(info.st_dev)|\(info.st_ino)"
-        return SHA256.hash(data: Data(material.utf8))
+        let fingerprint = SHA256.hash(data: Data(material.utf8))
             .map { String(format: "%02x", $0) }
             .joined()
+        return (fingerprint, nil)
     }
 
     /// Returns the verified peer PID for a bootstrap socket connection, if available.

@@ -227,6 +227,10 @@ actor ACPAgentSessionController {
     private struct PermissionOption {
         let optionID: String
         let kind: String
+        /// The agent's own wording for this option. Agents that advertise several
+        /// distinctly-worded choices are unreadable without it, because the approval
+        /// card has no other source for what an option actually means.
+        let name: String?
     }
 
     private struct AutoApprovalSelection {
@@ -2117,7 +2121,11 @@ actor ACPAgentSessionController {
                 let optionID = optionDictionary["optionId"] as? String,
                 let kind = optionDictionary["kind"] as? String
             else { return nil }
-            return PermissionOption(optionID: optionID, kind: kind)
+            return PermissionOption(
+                optionID: optionID,
+                kind: kind,
+                name: optionDictionary["name"] as? String
+            )
         }
 
         let rawInput = resolvedToolCall["rawInput"] as? [String: Any]
@@ -2146,7 +2154,7 @@ actor ACPAgentSessionController {
                 toolTitle: toolTitle,
                 toolKind: toolKind,
                 rawInputJSON: rawInputJSON,
-                options: optionDictionaries
+                options: options
             )
         )
 
@@ -3696,11 +3704,43 @@ actor ACPAgentSessionController {
         }
     }
 
+    private static let invisibleOptionLabelScalars = CharacterSet.whitespacesAndNewlines
+        .union(.controlCharacters)
+
+    /// The line shown for one advertised option: the agent's wording when it gives any,
+    /// otherwise its identifier. Both are agent-authored, so both go through the same
+    /// sanitiser -- routing only the name through it left the identifier able to
+    /// reintroduce the newline this is meant to prevent.
+    private static func optionLabel(name: String?, optionID: String) -> String {
+        displayableOptionLabel(name ?? "")
+            ?? displayableOptionLabel(optionID)
+            ?? ""
+    }
+
+    /// Collapse an agent-authored option string onto one display line, or `nil` when it
+    /// carries nothing visible.
+    ///
+    /// Both the name and the option ID come from the agent, and the caller joins labels
+    /// with a newline, so a value containing one would present a single option as two.
+    /// Emptiness is tested by looking for a visible scalar rather than by trimming the
+    /// invisible ones away: a trailing format character can be load-bearing, and trimming
+    /// them truncates emoji tag sequences such as the subdivision flags.
+    private static func displayableOptionLabel(_ raw: String) -> String? {
+        let collapsed = raw
+            .components(separatedBy: .newlines)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard collapsed.unicodeScalars.contains(where: { !invisibleOptionLabelScalars.contains($0) })
+        else { return nil }
+        return collapsed
+    }
+
     private func approvalDetails(
         toolTitle: String?,
         toolKind: String?,
         rawInputJSON: String?,
-        options: [[String: Any]]
+        options: [PermissionOption]
     ) -> [AgentApprovalDetail] {
         var details: [AgentApprovalDetail] = []
         if let toolTitle, !toolTitle.isEmpty {
@@ -3712,10 +3752,17 @@ actor ACPAgentSessionController {
         if let rawInputJSON, !rawInputJSON.isEmpty {
             details.append(AgentApprovalDetail(label: "Input", value: rawInputJSON, isCode: true))
         }
-        if !options.isEmpty,
-           let optionsJSON = serializeJSON(options)
-        {
-            details.append(AgentApprovalDetail(label: "Options", value: optionsJSON, isCode: true))
+        let optionLabels = options.map {
+            Self.optionLabel(name: $0.name, optionID: $0.optionID)
+        }
+        if !optionLabels.isEmpty {
+            details.append(
+                AgentApprovalDetail(
+                    label: "Options",
+                    value: optionLabels.joined(separator: "\n"),
+                    isCode: false
+                )
+            )
         }
         return details
     }
@@ -4610,4 +4657,18 @@ actor ACPAgentSessionController {
     private func diagnose(_ event: DiagnosticEvent) {
         diagnosticSink?(event)
     }
+
+    #if DEBUG
+        /// Test seam for the composed option line, covering the name-then-identifier
+        /// fallback rather than the sanitiser alone.
+        static func test_optionLabel(name: String?, optionID: String) -> String {
+            optionLabel(name: name, optionID: optionID)
+        }
+
+        /// Test seam for approval-card option labelling: collapses an agent-authored
+        /// option string onto one line, or returns nil when nothing visible remains.
+        static func test_displayableOptionLabel(_ raw: String) -> String? {
+            displayableOptionLabel(raw)
+        }
+    #endif
 }

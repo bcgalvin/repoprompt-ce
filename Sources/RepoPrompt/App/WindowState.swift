@@ -761,6 +761,18 @@ class WindowState: ObservableObject {
     /// Uses deferred title update to avoid triggering layout during window lifecycle events
     /// (REPOPROMPT-1K4 fix).
     func attachWindow(_ window: NSWindow?) {
+        performWindowAttachment(window, update: updateAttachedWindow)
+    }
+
+    /// The admission boundary is window-independent so a deferred attach can be tested without
+    /// opening an AppKit window. Detach must still clean up after closing has begun.
+    func performWindowAttachment<Window>(_ window: Window?, update: (Window?) -> Void) {
+        // WindowAccessor may deliver its deferred callback after the idempotent beginClose ran.
+        guard window == nil || !isClosing else { return }
+        update(window)
+    }
+
+    private func updateAttachedWindow(_ window: NSWindow?) {
         // Detach path (always do the cleanup even if both are nil)
         if window == nil {
             let oldWindow = nsWindow

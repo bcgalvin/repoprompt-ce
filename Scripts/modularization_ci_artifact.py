@@ -9,6 +9,7 @@ import json
 import tarfile
 from pathlib import Path
 from swift_imports import sources_import_module
+from ci_test_coverage import listed_tests, validate_targets
 
 ROOT = Path(__file__).resolve().parent.parent
 METADATA = Path('.build/modularization')
@@ -34,6 +35,10 @@ def validate(root: Path) -> Path:
         fingerprints = json.loads((metadata / 'app-source-sha256.json').read_text(encoding='utf-8'))['source_sha256']
         index = json.loads((metadata / 'index-check.json').read_text(encoding='utf-8'))['source_sha256']
         listing = (metadata / 'ci-test-list.txt').read_text(encoding='utf-8')
+        targets = json.loads((metadata / 'test-targets.json').read_text(encoding='utf-8'))
+        if targets['package_sha256'] != hashlib.sha256((root / 'Package.swift').read_bytes()).hexdigest():
+            raise ValueError('CI artifact manifest does not match checkout')
+        validate_targets(listed_tests(listing), targets['targets'])
         test_fingerprints = json.loads((metadata / 'test-source-sha256.json').read_text(encoding='utf-8'))['source_sha256']
     except (OSError, ValueError, KeyError, TypeError) as error:
         raise ValueError(f'CI artifact gate metadata missing or invalid: {error}') from error
@@ -67,7 +72,7 @@ def validate(root: Path) -> Path:
 def pack(root: Path, output: Path) -> int:
     products = validate(root)
     members = [root / METADATA / name for name in
-               ('app-source-sha256.json', 'index-check.json', 'ci-test-list.txt', 'test-source-sha256.json')]
+               ('app-source-sha256.json', 'index-check.json', 'ci-test-list.txt', 'test-source-sha256.json', 'test-targets.json')]
     members += sorted(path for path in products.iterdir()
                       if (path.is_dir() and path.suffix in {'.xctest', '.bundle', '.framework'})
                       or (path.is_file() and path.suffix == '.dylib'))

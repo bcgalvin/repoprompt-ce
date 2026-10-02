@@ -2667,11 +2667,16 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
     }
 
     private func beginCodexCompaction(_ session: AgentTabSession) {
+        viewModel?.ensureRunServiceMaterializedForRunStart()
         if session.activeRunOwnership == nil {
             _ = session.beginRunAttempt(source: "codex.compaction")
         }
         session.codexPendingTurnKind = .compact
         session.runState = .running
+        let compactionStartedAt = Date()
+        session.codexLastEventAt = compactionStartedAt
+        recordCodexWatchdogProgress(for: session, at: compactionStartedAt)
+        updateCodexStallWatchdogState(for: session)
         setRunningStatus("Compacting context…", source: .transport, session: session, urgent: true)
         viewModel?.setAgentRunActive(session.tabID, isActive: true)
         viewModel?.requestUIRefresh(tabID: session.tabID, urgent: true)

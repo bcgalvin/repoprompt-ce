@@ -92,12 +92,7 @@ enum AgentOraclePillLogic {
             let sameAgentLegacyRunMatches = renderable.filter { matchesAgent($0) && $0.agentModeSessionID != nil && $0.agentModeRunID == nil }
             if !sameAgentLegacyRunMatches.isEmpty { return sameAgentLegacyRunMatches }
 
-            if let activeAgentSessionID,
-               renderable.contains(where: { $0.agentModeSessionID == activeAgentSessionID })
-            {
-                return []
-            }
-            return renderable.filter(isUnownedLegacy)
+            // A new process run must not hide completed Oracle results from the same agent session.
         }
 
         if let activeAgentSessionID {

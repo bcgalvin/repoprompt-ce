@@ -444,12 +444,20 @@ struct AgentMCPStartWorktreeCoordinator {
             workingDirectory: repository.rootPath,
             enableDebugLogging: false
         ))
-        let result = try await runner.run(
-            args: ["worktree", "remove", "--force", "--", worktree.path],
-            stdin: nil,
-            outputMode: .none,
-            timeout: 30
-        )
+        let result: CLIProcessRunner.Result
+        do {
+            result = try await runner.run(
+                args: ["worktree", "remove", "--force", "--", worktree.path],
+                stdin: nil,
+                outputMode: .none,
+                timeout: 30
+            )
+        } catch {
+            await vcsService.invalidateCache(for: URL(fileURLWithPath: worktree.path))
+            throw error
+        }
+        // The removal bypasses VCSService; drop the removed path's caches and all shared listings.
+        await vcsService.invalidateCache(for: URL(fileURLWithPath: worktree.path))
         guard result.status == 0 else {
             let stderr = String(data: result.stderr, encoding: .utf8)?
                 .trimmingCharacters(in: .whitespacesAndNewlines)

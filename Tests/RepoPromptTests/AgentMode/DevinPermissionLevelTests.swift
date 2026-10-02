@@ -32,6 +32,14 @@ final class DevinPermissionLevelTests: XCTestCase {
         }
     }
 
+    func testDevinPermissionOptionScope() {
+        XCTAssertTrue(ACPPermissionOptionPolicy.isAutoSelectable(optionID: "allow_once", for: .devin))
+        XCTAssertTrue(ACPPermissionOptionPolicy.isAutoSelectable(optionID: "allow_session", for: .devin))
+        for optionID in ["allow_always", "allow_always_global", "allow_server_session", "allow_server_always"] {
+            XCTAssertFalse(ACPPermissionOptionPolicy.isAutoSelectable(optionID: optionID, for: .devin))
+        }
+    }
+
     func testCLIPermissionModeRoundTripsAndIdentifiesUnsupportedModes() {
         XCTAssertEqual(Level.from(cliPermissionMode: "auto"), .normal)
         XCTAssertEqual(Level.from(cliPermissionMode: "accept-edits"), .acceptEdits)

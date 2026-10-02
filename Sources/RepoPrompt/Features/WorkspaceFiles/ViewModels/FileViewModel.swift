@@ -14,21 +14,6 @@ enum FilePreviewMode {
     case plainText
 }
 
-enum FileContentFreshnessPolicy {
-    /// Trust the existing FileViewModel metadata/cache fast path.
-    case cachedMetadata
-    /// Validate disk metadata before trusting cached content; never return stale fallback on validation/load failure.
-    case validateDiskMetadata
-}
-
-/// Snapshot of file content plus a stable in-memory revision for search cache identity.
-struct FileSearchContentSnapshot {
-    let content: String?
-    let contentRevision: UInt64?
-    let modificationDate: Date
-    let isFresh: Bool
-}
-
 /// Snapshot of preview state computed by FileViewModel for safe consumption by views.
 /// This moves all preview policy decisions to the view model layer, away from SwiftUI views.
 struct FilePreviewSnapshot {
@@ -1347,3 +1332,16 @@ extension FileViewModel {
         SliceAssemblyBuilder.build(from: content, ranges: ranges)
     }
 }
+
+extension FrozenFileRecord {
+    init(from vm: FileViewModel) {
+        self.init(
+            name: vm.name,
+            relativePath: vm.relativePath,
+            fullPath: vm.standardizedFullPath,
+            rootFolderPath: vm.standardizedRootFolderPath
+        )
+    }
+}
+
+extension FileViewModel: WorkspaceSearchFileProjection {}

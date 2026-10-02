@@ -196,7 +196,7 @@ actor GitStatusActor {
             for groupRequests in grouped.values {
                 group.addTask { [vcsService] in
                     guard let resolved = groupRequests.first?.resolved else { return [] }
-                    let worktrees = try? await vcsService.listGitWorktrees(for: resolved)
+                    let worktrees = try? await vcsService.sharedGitWorktreeListing(for: resolved)
                     var results: [RootContextResult] = []
                     results.reserveCapacity(groupRequests.count)
                     for request in groupRequests {

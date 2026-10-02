@@ -1,6 +1,15 @@
 import CryptoKit
 import Foundation
 import RepoPromptFoundation
+import RepoPromptShared
+
+enum WorkspaceContextFilesystemIdentity {
+    #if DEBUG
+        static let identity = MCPFilesystemIdentity.repoPromptCE(.debug)
+    #else
+        static let identity = MCPFilesystemIdentity.repoPromptCE(.release)
+    #endif
+}
 
 public enum SliceMutationMode: Sendable {
     case add
@@ -53,7 +62,7 @@ actor PartitionStore {
 
     /// <AppSupport>/RepoPrompt CE/Partitions
     private static func partitionsBaseURL() -> URL {
-        MCPFilesystemConstants.identity.applicationSupportRootURL()
+        WorkspaceContextFilesystemIdentity.identity.applicationSupportRootURL()
             .appendingPathComponent("Partitions", isDirectory: true)
     }
 
