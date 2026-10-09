@@ -154,6 +154,74 @@ final class ApplyEditsCoreRecoveryTests: XCTestCase {
         XCTAssertEqual(outcomes[1], EditOutcome(index: 1, status: "success", error: nil))
     }
 
+    /// Batch fallback with no unique literal match. Same-start chunks and a repeat of a
+    /// replace-all's search must keep unrelated lines and report accurate outcomes.
+    func testBatchDiffFallbackKeepsLinesBesideSameLineChunks() async throws {
+        struct Row {
+            let name: String
+            let original: String
+            let edits: [ApplyEditsOperation]
+            let text: String
+            let status: ApplyEditsStatus
+            let applied: Int
+            let outcomeStatuses: [String]
+        }
+
+        let block = "A\nb\nc\nd\n"
+        let rows = [
+            Row(
+                name: "replace-all removal, then a sibling on the removed lines",
+                original: "FOO\nFOO\ntail\n",
+                edits: [
+                    ApplyEditsOperation(search: "foo", replace: "", replaceAll: true),
+                    ApplyEditsOperation(search: "foo", replace: "baz", replaceAll: false)
+                ],
+                text: "tail\n",
+                status: .partial,
+                applied: 1,
+                outcomeStatuses: ["success", "failed"]
+            ),
+            Row(
+                name: "one replace-all over adjacent blocks",
+                original: block + block,
+                edits: [ApplyEditsOperation(search: "a\nb\nc\nd", replace: "A2\nb\nc\nd\nY", replaceAll: true)],
+                text: "A2\nb\nc\nd\nY\nA2\nb\nc\nd\nY\n",
+                status: .success,
+                applied: 1,
+                outcomeStatuses: ["success"]
+            ),
+            Row(
+                name: "repeated multi-line search, first edit inserts a line",
+                original: block + block,
+                edits: [
+                    ApplyEditsOperation(search: "A\nb\nc\nd", replace: "A2\nb\nc\nd\nY", replaceAll: false),
+                    ApplyEditsOperation(search: "A\nb\nc\nd", replace: "A3\nb\nc\nd", replaceAll: false)
+                ],
+                text: "A2\nb\nc\nd\nY\nA3\nb\nc\nd\n",
+                status: .success,
+                applied: 2,
+                outcomeStatuses: ["success", "success"]
+            )
+        ]
+
+        for row in rows {
+            let request = ApplyEditsRequest(path: "file.txt", mode: .batch(row.edits), verbose: false)
+
+            let result = try await engine.apply(request: request, to: row.original)
+
+            XCTAssertEqual(result.updatedText, row.text, row.name)
+            XCTAssertEqual(result.status, row.status, row.name)
+            XCTAssertEqual(result.editsRequested, row.edits.count, row.name)
+            XCTAssertEqual(result.editsApplied, row.applied, row.name)
+            let outcomes = try XCTUnwrap(result.outcomes, row.name)
+            XCTAssertEqual(outcomes.map(\.index), Array(row.edits.indices), row.name)
+            XCTAssertEqual(outcomes.map(\.status), row.outcomeStatuses, row.name)
+            for outcome in outcomes {
+                XCTAssertEqual(outcome.error == nil, outcome.status == "success", "\(row.name), edit \(outcome.index)")
+            }
+        }
+    }
+
     // MARK: - Issue #1262: fallback must never drop text outside the search span
 
     private static let longPrefix = "| id | " + String(repeating: "a", count: 160)
