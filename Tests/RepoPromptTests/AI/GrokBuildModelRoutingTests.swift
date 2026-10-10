@@ -713,4 +713,98 @@ final class GrokBuildModelRoutingTests: XCTestCase {
             "Grok 4.6"
         )
     }
+
+    /// A saved catalog that contains an explicit model admits it on the first one-shot request,
+    /// before anything warms the registry. The CLI path is absent, so an admitted request stops
+    /// at the support probe and nothing launches.
+    func testOneShotAdmitsSavedCatalogModelBeforeRegistryWarms() async throws {
+        let registry = AgentACPModelRegistry.shared
+        XCTAssertTrue(registry.updateDiscoveredModels(
+            ACPDiscoveredSessionModels(
+                options: [
+                    AgentModelOption(
+                        rawValue: "grok-4.6",
+                        displayName: "Grok 4.6",
+                        description: nil,
+                        isPlaceholderDefault: false,
+                        isProviderDefault: false
+                    )
+                ],
+                currentModelRaw: "grok-4.6"
+            ),
+            for: .grokBuild
+        ))
+        registry.test_clearMemoryPreservingStore(providerID: .grokBuild)
+        XCTAssertNil(registry.resolvedSnapshot(for: .grokBuild), "Precondition: the registry is cold")
+
+        let absentCLI = FileManager.default.temporaryDirectory
+            .appendingPathComponent("rpce-absent-grok-\(UUID().uuidString)/grok").path
+        let provider = GrokBuildOneShotHeadlessAgentProvider(
+            config: GrokBuildAgentConfig(
+                commandName: absentCLI,
+                modelString: "grok-4.6",
+                includeRepoPromptMCPServer: false
+            ),
+            launchResolver: GrokBuildACPLaunchResolver(environmentProvider: { _ in ["PATH": "/usr/bin:/bin"] }),
+            apiKeyProvider: { nil }
+        )
+        func requestOutcome() async -> String {
+            do {
+                let stream = try await provider.streamAgentMessage(
+                    AgentMessage(systemPrompt: "", userMessage: "fixture prompt")
+                )
+                for try await _ in stream {}
+                return "completed"
+            } catch {
+                return String(describing: error)
+            }
+        }
+
+        let cold = await requestOutcome()
+        await registry.test_warmStandardStore()
+        XCTAssertNotNil(registry.resolvedSnapshot(for: .grokBuild), "Precondition: the saved catalog warms")
+        let warm = await requestOutcome()
+        await provider.dispose()
+
+        XCTAssertFalse(warm.contains("not in the discovered model set"), "Control: warm admission; got \(warm)")
+        XCTAssertEqual(cold, warm, "A cold registry must not change the outcome for a saved-catalog model")
+    }
+
+    /// An Oracle lane for a catalog-recorded Grok effort variant reports that variant's effort,
+    /// the value the one-shot sends as `--reasoning-effort`.
+    func testOracleExecutionProfileReportsCatalogRecordedGrokEffort() throws {
+        let base = AgentModelOption(
+            rawValue: "grok-4.7-build-fast",
+            displayName: "Grok 4.7 Build Fast",
+            description: nil,
+            isPlaceholderDefault: false,
+            isProviderDefault: false,
+            supportedReasoningEfforts: [.high, .xhigh],
+            defaultReasoningEffort: .high
+        )
+        let variant = AgentModelOption(
+            rawValue: "grok-4.7-build-fast-xhigh",
+            displayName: "Grok 4.7 Build Fast Extra High",
+            description: nil,
+            isPlaceholderDefault: false,
+            isProviderDefault: false,
+            effortVariant: AgentModelEffortVariant(baseModelRaw: base.rawValue, reasoningEffort: .xhigh)
+        )
+        XCTAssertTrue(AgentACPModelRegistry.shared.updateDiscoveredModels(
+            ACPDiscoveredSessionModels(options: [base, variant], currentModelRaw: base.rawValue),
+            for: .grokBuild
+        ))
+        let snapshot = try XCTUnwrap(AgentACPModelRegistry.shared.resolvedSnapshot(for: .grokBuild))
+        XCTAssertEqual(
+            GrokBuildModelSpecifier.decompose(raw: variant.rawValue, options: snapshot.options)?.explicitEffort,
+            .xhigh,
+            "Precondition: the one-shot sends this lane with --reasoning-effort xhigh"
+        )
+
+        let profile = try XCTUnwrap(
+            AppOracleGroupRouting.executionProfile(for: .grokBuildCustom(name: variant.rawValue))
+        )
+        XCTAssertEqual(profile.modelID, variant.rawValue)
+        XCTAssertEqual(profile.effectiveReasoningEffort, "xhigh")
+    }
 }
