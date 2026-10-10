@@ -1045,6 +1045,9 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
         var test_afterMCPControlRegistration: (@MainActor (UUID) async -> Void)?
         /// Holds lane creation after provenance is installed and before configuration.
         var test_afterOversightLaneProvision: (@MainActor (UUID) async -> Void)?
+        /// Runs after Handoff's async payload/tab work and before the captured source worktree
+        /// bindings are revalidated and installed on the destination.
+        var test_beforeHandoffDestinationWorktreeInstall: (@MainActor () async -> Void)?
         var test_updateBindingsCallCount: Int = 0
         var test_syncComposerCallCount: Int = 0
         var test_syncRuntimeMetricsCallCount: Int = 0
@@ -15705,6 +15708,12 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
         guard !AppLaunchConfiguration.current.suppressesAgentSessionPersistence else { return }
         guard let session = sessions[tabID] else { return }
         session.saveRequestGeneration &+= 1
+        guard !session.isInstallingHandoffWorktreeBindings else {
+            // Handoff saves the destination explicitly once its inherited bindings are installed.
+            session.saveDebounceTask?.cancel()
+            session.saveDebounceTask = nil
+            return
+        }
         #if DEBUG
             let replacedPendingSave = session.saveDebounceTask != nil
             perfRecorder.increment("save.schedule", tabID: tabID)
@@ -15716,7 +15725,9 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
         session.saveDebounceTask?.cancel()
         session.saveDebounceTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: 1_000_000_000) // 1 second debounce
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled,
+                  self?.sessions[tabID]?.isInstallingHandoffWorktreeBindings != true
+            else { return }
             await self?.saveSession(for: tabID)
         }
     }
@@ -15787,6 +15798,11 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
                 perfRecorder.event("save.session.skipped", tabID: tabID, fields: ["reason": "missing"])
             #endif
             return .notRequired
+        }
+        guard !session.isInstallingHandoffWorktreeBindings else {
+            // Any save path (debounce, flush, required flush) would persist the provisional,
+            // unbound Handoff destination; Handoff saves it explicitly once installation settles.
+            return .deferred("Handoff is still preparing this chat's worktree execution location.")
         }
         guard session.isDirty || session.activeAgentSessionID == nil else {
             #if DEBUG
@@ -22527,6 +22543,14 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
             throw AgentSessionError.invalidHandoffCutoff
         }
 
+        // Capture the source's execution authority before the first suspension so the destination
+        // receives the same mappings the payload describes. Unknown authority fails before any tab
+        // exists; an unbound source keeps today's primary-checkout behavior.
+        let sourceWorktreeSnapshot = try captureHandoffSourceWorktreeSnapshot(
+            sourceTabID: sourceTabID,
+            sourceSession: sourceSession
+        )
+
         // 1) Build the handoff payload from the same transcript universe used for migration.
         let payload = await buildHandoffPayload(
             sourceTabID: sourceTabID,
@@ -22590,6 +22614,47 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
             throw PersistentBindingMutationError.staleTransition
         }
 
+        // 5b) Install the captured source worktree mappings on the fresh destination through the
+        // ordinary transition authority, before its first save, activation, or provider turn. The
+        // destination gets its own projection ownership; provider identity, merge operations,
+        // spawn parentage, and oversight provenance are not copied. A bound source that became
+        // stale or unavailable removes the never-activated destination instead of silently
+        // falling back to the primary checkout.
+        if !sourceWorktreeSnapshot.bindings.isEmpty {
+            // Transcript/payload mutation above already armed the ordinary autosave debounce.
+            // Disarm it before awaiting installation so no save can persist the provisional,
+            // unbound destination; step 6 performs the first save once the mappings are installed.
+            // The background tab is visible, so also hold the existing initial-worktree send gate:
+            // the destination must not start a provider turn on the primary checkout mid-install.
+            destSession.isInstallingHandoffWorktreeBindings = true
+            destSession.isPreparingInitialWorktree = true
+            destSession.saveDebounceTask?.cancel()
+            destSession.saveDebounceTask = nil
+            do {
+                defer {
+                    destSession.isInstallingHandoffWorktreeBindings = false
+                    destSession.isPreparingInitialWorktree = false
+                }
+                try await installHandoffDestinationWorktreeBindings(
+                    sourceWorktreeSnapshot,
+                    sourceTabID: sourceTabID,
+                    sourceSession: sourceSession,
+                    destinationTabID: destTabID,
+                    destinationSession: destSession
+                )
+            } catch {
+                let removed = await abandonUnactivatedHandoffDestination(tabID: destTabID, promptManager: promptManager)
+                throw Self.handoffExecutionLocationError(error, destinationRemoved: removed)
+            }
+            guard destSession.currentRestorationBindingToken == expectedChildBindingToken else {
+                let removed = await abandonUnactivatedHandoffDestination(tabID: destTabID, promptManager: promptManager)
+                throw Self.handoffExecutionLocationError(
+                    ExecutionLocationTransitionError.stale,
+                    destinationRemoved: removed
+                )
+            }
+        }
+
         // 6) Complete the destination's ordinary first durable save before inheritance. Item/payload
         // mutation may already have scheduled the normal debounce; cancel that pending attempt and run
         // the same save core directly so Handoff has a binding-qualified completion result.
@@ -22638,6 +22703,177 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
         updateBindingsFromSession(destSession)
 
         return destTabID
+    }
+
+    /// Source execution authority captured by Handoff before any suspension. `sourceSessionID` pins
+    /// the exact source incarnation so later revalidation never rediscovers bindings from another one.
+    struct HandoffSourceWorktreeSnapshot: Equatable {
+        let sourceSessionID: UUID?
+        let bindings: [AgentSessionWorktreeBinding]
+    }
+
+    private func captureHandoffSourceWorktreeSnapshot(
+        sourceTabID: UUID,
+        sourceSession: TabSession
+    ) throws -> HandoffSourceWorktreeSnapshot {
+        guard let sourceSessionID = sourceSession.activeAgentSessionID else {
+            // Worktree bindings are only installed on a bound session identity, so a source without
+            // one has never been bound and keeps the existing primary-checkout Handoff behavior.
+            guard sourceSession.worktreeBindings.isEmpty else {
+                throw AgentSessionError.handoffExecutionLocationUnavailable(
+                    "The source conversation's worktree authority is unavailable."
+                )
+            }
+            return HandoffSourceWorktreeSnapshot(sourceSessionID: nil, bindings: [])
+        }
+        guard !sourceSession.worktreeBindingTransitionInProgress,
+              !sourceSession.isChangingExecutionLocation,
+              !sourceSession.isPreparingInitialWorktree
+        else {
+            throw AgentSessionError.handoffExecutionLocationUnavailable(
+                "The source conversation is changing its execution location. Try again after it settles."
+            )
+        }
+        // Hydrated-empty is genuinely unbound; unhydrated or unresolvable authority is unknown and
+        // must not be mistaken for the primary checkout.
+        guard case let .hydrated(bindings) = worktreeBindingState(
+            forAgentSessionID: sourceSessionID,
+            tabID: sourceTabID
+        ) else {
+            throw AgentSessionError.handoffExecutionLocationUnavailable(
+                "The source conversation's worktree authority could not be resolved."
+            )
+        }
+        if !bindings.isEmpty {
+            do {
+                try AgentWorktreeRuntimeWorkspaceResolver.validateBindingsAvailable(bindings)
+            } catch {
+                throw AgentSessionError.handoffExecutionLocationUnavailable(
+                    "The source worktree is no longer available: \(error.localizedDescription)"
+                )
+            }
+        }
+        return HandoffSourceWorktreeSnapshot(sourceSessionID: sourceSessionID, bindings: bindings)
+    }
+
+    /// Returns the source's current bindings when they still name the captured execution location.
+    /// Comparison uses execution identity (logical root -> repository, worktree, path) rather than
+    /// whole structs, so branch/head metadata refreshed while the source works in the same worktree
+    /// does not abort Handoff.
+    private func revalidateHandoffSourceWorktreeSnapshot(
+        _ snapshot: HandoffSourceWorktreeSnapshot,
+        sourceTabID: UUID,
+        sourceSession: TabSession
+    ) throws -> [AgentSessionWorktreeBinding] {
+        guard let sourceSessionID = snapshot.sourceSessionID,
+              sessions[sourceTabID] === sourceSession,
+              sourceSession.activeAgentSessionID == sourceSessionID,
+              !sourceSession.worktreeBindingTransitionInProgress,
+              !sourceSession.isChangingExecutionLocation,
+              !sourceSession.isPreparingInitialWorktree,
+              case let .hydrated(currentBindings) = worktreeBindingState(
+                  forAgentSessionID: sourceSessionID,
+                  tabID: sourceTabID
+              ),
+              currentBindings.count == snapshot.bindings.count,
+              Self.executionRootMappings(currentBindings) == Self.executionRootMappings(snapshot.bindings)
+        else {
+            throw AgentSessionError.handoffExecutionLocationUnavailable(
+                "The source conversation's execution location changed during Handoff. Try again."
+            )
+        }
+        do {
+            try AgentWorktreeRuntimeWorkspaceResolver.validateBindingsAvailable(currentBindings)
+        } catch {
+            throw AgentSessionError.handoffExecutionLocationUnavailable(
+                "The source worktree is no longer available: \(error.localizedDescription)"
+            )
+        }
+        return currentBindings
+    }
+
+    /// Installs the captured source mappings on a fresh, never-activated Handoff destination through
+    /// the established initial-start transition, which materializes the destination's own projection
+    /// ownership before publishing its bindings.
+    private func installHandoffDestinationWorktreeBindings(
+        _ snapshot: HandoffSourceWorktreeSnapshot,
+        sourceTabID: UUID,
+        sourceSession: TabSession,
+        destinationTabID: UUID,
+        destinationSession: TabSession
+    ) async throws {
+        #if DEBUG
+            if let hook = test_beforeHandoffDestinationWorktreeInstall {
+                await hook()
+            }
+        #endif
+        try Task.checkCancellation()
+        let installBindings = try revalidateHandoffSourceWorktreeSnapshot(
+            snapshot,
+            sourceTabID: sourceTabID,
+            sourceSession: sourceSession
+        )
+        guard sessions[destinationTabID] === destinationSession,
+              let destinationSessionID = destinationSession.activeAgentSessionID,
+              destinationSessionID != snapshot.sourceSessionID,
+              destinationSession.worktreeBindings.isEmpty
+        else {
+            throw ExecutionLocationTransitionError.stale
+        }
+        let stagedHandoff = destinationSession.pendingHandoff
+        _ = try await transitionWorktreeBindings(
+            installBindings,
+            forSessionID: destinationSessionID,
+            intent: .initialSend
+        )
+        // The fresh destination has no provider runtime to recover; the transition's resume-recovery
+        // staging must never replace the Handoff payload staged for its first send.
+        if destinationSession.pendingHandoff != stagedHandoff {
+            destinationSession.pendingHandoff = stagedHandoff
+            destinationSession.isDirty = true
+        }
+        guard sessions[destinationTabID] === destinationSession,
+              destinationSession.activeAgentSessionID == destinationSessionID,
+              destinationSession.worktreeBindings == installBindings
+        else {
+            throw ExecutionLocationTransitionError.stale
+        }
+        // The transition awaited; the payload and mappings must still describe the same source.
+        _ = try revalidateHandoffSourceWorktreeSnapshot(
+            snapshot,
+            sourceTabID: sourceTabID,
+            sourceSession: sourceSession
+        )
+    }
+
+    /// Removes a Handoff destination that was never activated. Closing deletes its durable session
+    /// and releases any worktree ownership, so it cannot later run against the primary checkout.
+    private func abandonUnactivatedHandoffDestination(tabID: UUID, promptManager: PromptViewModel) async -> Bool {
+        sessions[tabID]?.saveDebounceTask?.cancel()
+        sessions[tabID]?.saveDebounceTask = nil
+        let report = await promptManager.closeComposeTab(tabID)
+        // Post-removal issues (for example, durable cleanup that did not complete) mean the
+        // destination may survive a relaunch, so they are reported like a rejected close.
+        let removed = report.rejections.isEmpty
+            && report.cleanupIssues.isEmpty
+            && report.removedComposeTabIDs.contains(tabID)
+        if !removed {
+            let messages = report.rejections.map(\.message) + report.cleanupIssues.map(\.message)
+            print("[AgentVM] Warning: failed to remove unactivated handoff destination \(tabID): \(messages)")
+        }
+        return removed
+    }
+
+    private static func handoffExecutionLocationError(_ error: Error, destinationRemoved: Bool) -> Error {
+        var reason: String = if case let AgentSessionError.handoffExecutionLocationUnavailable(message) = error {
+            message
+        } else {
+            (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+        }
+        if !destinationRemoved {
+            reason += " The partially prepared new chat could not be removed; close it instead of using it."
+        }
+        return AgentSessionError.handoffExecutionLocationUnavailable(reason)
     }
 
     /// Builds a handoff transcript XML from the resolved source transcript using the shared
