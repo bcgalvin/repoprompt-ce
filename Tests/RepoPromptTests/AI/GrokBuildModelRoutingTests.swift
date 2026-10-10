@@ -480,7 +480,8 @@ final class GrokBuildModelRoutingTests: XCTestCase {
     private func makeSyntheticOneShotProvider(
         root: URL,
         mode: String = "cancel",
-        requestTimeout: TimeInterval = 30
+        requestTimeout: TimeInterval = 30,
+        modelString: String? = nil
     ) throws -> GrokBuildOneShotHeadlessAgentProvider {
         let executable = root.appendingPathComponent("grok")
         let script = #"""
@@ -489,6 +490,7 @@ final class GrokBuildModelRoutingTests: XCTestCase {
             printf 'stdio\n'
             exit 0
         fi
+        printf '%s\n' "$@" > "$RPCE_FIXTURE_ROOT/args"
         printf '%s\n' \
             "GROK_CLAUDE_MCPS_ENABLED=$GROK_CLAUDE_MCPS_ENABLED" \
             "GROK_CURSOR_MCPS_ENABLED=$GROK_CURSOR_MCPS_ENABLED" \
@@ -549,7 +551,11 @@ final class GrokBuildModelRoutingTests: XCTestCase {
             "RPCE_FIXTURE_MODE": mode
         ]
         return GrokBuildOneShotHeadlessAgentProvider(
-            config: GrokBuildAgentConfig(commandName: executable.path, includeRepoPromptMCPServer: false),
+            config: GrokBuildAgentConfig(
+                commandName: executable.path,
+                modelString: modelString,
+                includeRepoPromptMCPServer: false
+            ),
             launchResolver: GrokBuildACPLaunchResolver(environmentProvider: { _ in environment }),
             requestTimeout: requestTimeout,
             apiKeyProvider: { nil }
@@ -714,60 +720,56 @@ final class GrokBuildModelRoutingTests: XCTestCase {
         )
     }
 
-    /// A saved catalog that contains an explicit model admits it on the first one-shot request,
-    /// before anything warms the registry. The CLI path is absent, so an admitted request stops
-    /// at the support probe and nothing launches.
+    /// A cold registry admits a saved effort variant and sends its recorded base and effort.
     func testOneShotAdmitsSavedCatalogModelBeforeRegistryWarms() async throws {
+        let base = AgentModelOption(
+            rawValue: "grok-4.7-build-fast",
+            displayName: "Grok 4.7 Build Fast",
+            description: nil,
+            isPlaceholderDefault: false,
+            isProviderDefault: false,
+            supportedReasoningEfforts: [.high, .xhigh],
+            defaultReasoningEffort: .high
+        )
+        let variant = AgentModelOption(
+            rawValue: "grok-4.7-build-fast-xhigh",
+            displayName: "Grok 4.7 Build Fast Extra High",
+            description: nil,
+            isPlaceholderDefault: false,
+            isProviderDefault: false,
+            effortVariant: AgentModelEffortVariant(baseModelRaw: base.rawValue, reasoningEffort: .xhigh)
+        )
         let registry = AgentACPModelRegistry.shared
         XCTAssertTrue(registry.updateDiscoveredModels(
-            ACPDiscoveredSessionModels(
-                options: [
-                    AgentModelOption(
-                        rawValue: "grok-4.6",
-                        displayName: "Grok 4.6",
-                        description: nil,
-                        isPlaceholderDefault: false,
-                        isProviderDefault: false
-                    )
-                ],
-                currentModelRaw: "grok-4.6"
-            ),
+            ACPDiscoveredSessionModels(options: [base, variant], currentModelRaw: base.rawValue),
             for: .grokBuild
         ))
         registry.test_clearMemoryPreservingStore(providerID: .grokBuild)
         XCTAssertNil(registry.resolvedSnapshot(for: .grokBuild), "Precondition: the registry is cold")
 
-        let absentCLI = FileManager.default.temporaryDirectory
-            .appendingPathComponent("rpce-absent-grok-\(UUID().uuidString)/grok").path
-        let provider = GrokBuildOneShotHeadlessAgentProvider(
-            config: GrokBuildAgentConfig(
-                commandName: absentCLI,
-                modelString: "grok-4.6",
-                includeRepoPromptMCPServer: false
-            ),
-            launchResolver: GrokBuildACPLaunchResolver(environmentProvider: { _ in ["PATH": "/usr/bin:/bin"] }),
-            apiKeyProvider: { nil }
-        )
-        func requestOutcome() async -> String {
-            do {
-                let stream = try await provider.streamAgentMessage(
-                    AgentMessage(systemPrompt: "", userMessage: "fixture prompt")
-                )
-                for try await _ in stream {}
-                return "completed"
-            } catch {
-                return String(describing: error)
+        let root = try makeOneShotFixtureRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let provider = try makeSyntheticOneShotProvider(root: root, mode: "success", modelString: variant.rawValue)
+        var results: [AIStreamResult] = []
+        try await ProviderProcessLaunchPolicy.$allowsLaunchForTesting.withValue(true) {
+            let stream = try await provider.streamAgentMessage(
+                AgentMessage(systemPrompt: "fixture system", userMessage: "fixture prompt")
+            )
+            for try await result in stream {
+                results.append(result)
             }
         }
-
-        let cold = await requestOutcome()
-        await registry.test_warmStandardStore()
-        XCTAssertNotNil(registry.resolvedSnapshot(for: .grokBuild), "Precondition: the saved catalog warms")
-        let warm = await requestOutcome()
         await provider.dispose()
 
-        XCTAssertFalse(warm.contains("not in the discovered model set"), "Control: warm admission; got \(warm)")
-        XCTAssertEqual(cold, warm, "A cold registry must not change the outcome for a saved-catalog model")
+        XCTAssertEqual(results.last?.type, "message_stop", "The saved-catalog request completes")
+        let arguments = try String(contentsOf: root.appendingPathComponent("args"), encoding: .utf8)
+            .split(separator: "\n").map(String.init)
+        for (flag, value) in [("-m", base.rawValue), ("--reasoning-effort", "xhigh")] {
+            XCTAssertTrue(
+                zip(arguments, arguments.dropFirst()).contains { $0.0 == flag && $0.1 == value },
+                "Expected adjacent \(flag) \(value) arguments"
+            )
+        }
     }
 
     /// An Oracle lane for a catalog-recorded Grok effort variant reports that variant's effort,
@@ -790,21 +792,42 @@ final class GrokBuildModelRoutingTests: XCTestCase {
             isProviderDefault: false,
             effortVariant: AgentModelEffortVariant(baseModelRaw: base.rawValue, reasoningEffort: .xhigh)
         )
-        XCTAssertTrue(AgentACPModelRegistry.shared.updateDiscoveredModels(
-            ACPDiscoveredSessionModels(options: [base, variant], currentModelRaw: base.rawValue),
-            for: .grokBuild
-        ))
-        let snapshot = try XCTUnwrap(AgentACPModelRegistry.shared.resolvedSnapshot(for: .grokBuild))
-        XCTAssertEqual(
-            GrokBuildModelSpecifier.decompose(raw: variant.rawValue, options: snapshot.options)?.explicitEffort,
-            .xhigh,
-            "Precondition: the one-shot sends this lane with --reasoning-effort xhigh"
+        let suffixBase = AgentModelOption(
+            rawValue: "grok-4.7-build-fast-high",
+            displayName: "Grok Base Ending in High",
+            description: nil,
+            isPlaceholderDefault: false,
+            isProviderDefault: false
         )
-
-        let profile = try XCTUnwrap(
-            AppOracleGroupRouting.executionProfile(for: .grokBuildCustom(name: variant.rawValue))
-        )
-        XCTAssertEqual(profile.modelID, variant.rawValue)
-        XCTAssertEqual(profile.effectiveReasoningEffort, "xhigh")
+        let cases: [(name: String, options: [AgentModelOption]?, modelID: String, cold: Bool, expectedEffort: String?)] = [
+            ("warm variant", [base, variant], variant.rawValue, false, "xhigh"),
+            ("cold saved variant", [base, variant], variant.rawValue, true, "xhigh"),
+            ("bare base with advertised default", [base, variant], base.rawValue, false, nil),
+            ("effort-suffixed base without variant record", [suffixBase], suffixBase.rawValue, false, nil),
+            ("no catalog", nil, variant.rawValue, false, nil)
+        ]
+        let registry = AgentACPModelRegistry.shared
+        for row in cases {
+            registry.test_reset(providerID: .grokBuild)
+            if let options = row.options {
+                XCTAssertTrue(registry.updateDiscoveredModels(
+                    ACPDiscoveredSessionModels(options: options, currentModelRaw: options.first?.rawValue),
+                    for: .grokBuild
+                ), row.name)
+            }
+            if row.cold {
+                registry.test_clearMemoryPreservingStore(providerID: .grokBuild)
+                XCTAssertNil(registry.resolvedSnapshot(for: .grokBuild), row.name)
+            }
+            let profile = try XCTUnwrap(
+                AppOracleGroupRouting.executionProfile(for: .grokBuildCustom(name: row.modelID)),
+                row.name
+            )
+            XCTAssertEqual(profile.modelID, row.modelID, row.name)
+            XCTAssertEqual(profile.effectiveReasoningEffort, row.expectedEffort, row.name)
+            if row.cold {
+                XCTAssertNil(registry.resolvedSnapshot(for: .grokBuild), "Profile capture must not warm memory")
+            }
+        }
     }
 }
