@@ -803,7 +803,7 @@ final class GrokBuildModelRoutingTests: XCTestCase {
             ("warm variant", [base, variant], variant.rawValue, false, "xhigh"),
             ("cold saved variant", [base, variant], variant.rawValue, true, "xhigh"),
             ("bare base with advertised default", [base, variant], base.rawValue, false, nil),
-            ("effort-suffixed base without variant record", [suffixBase], suffixBase.rawValue, false, nil),
+            ("effort-suffixed base without variant record", [base, suffixBase], suffixBase.rawValue, false, nil),
             ("no catalog", nil, variant.rawValue, false, nil)
         ]
         let registry = AgentACPModelRegistry.shared

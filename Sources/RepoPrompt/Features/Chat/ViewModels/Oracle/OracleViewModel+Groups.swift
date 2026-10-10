@@ -40,9 +40,8 @@ enum AppOracleGroupRouting {
     }
 
     static func executionProfile(for model: AIModel) -> OracleExecutionProfile? {
-        let providerID = providerID(for: model)
         let effort: String?
-        if providerID == "grokBuild" {
+        if model.providerType == .grokBuild {
             let snapshot = AgentACPModelRegistry.shared.resolvedSnapshotIncludingStandardStore(for: .grokBuild)
             effort = GrokBuildModelSpecifier.decompose(
                 raw: model.modelName,
@@ -52,7 +51,7 @@ enum AppOracleGroupRouting {
             effort = model.defaultReasoningEffort
         }
         return try? OracleExecutionProfile(
-            providerID: providerID,
+            providerID: providerID(for: model),
             modelID: model.modelName,
             effectiveReasoningEffort: effort
         )
