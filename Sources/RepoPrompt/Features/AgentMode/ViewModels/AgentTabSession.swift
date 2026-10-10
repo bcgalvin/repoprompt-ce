@@ -1308,7 +1308,11 @@ final class AgentTabSession: ObservableObject {
     }
 
     /// Runtime-only timer and note worker; persisted state is deliberately inert on restore.
-    var selfCompactNativeCompletion: AgentSelfCompactNativeCompletionCoordinator?
+    var selfCompactNativeCompletion: AgentSelfCompactNativeCompletionCoordinator? {
+        didSet {
+            if oldValue !== selfCompactNativeCompletion { oldValue?.cancelRuntimeWork() }
+        }
+    }
 
     /// Transcript item IDs present when an ACP self-compact command was issued. Rows added after
     /// this set are the command turn. Not persisted.
