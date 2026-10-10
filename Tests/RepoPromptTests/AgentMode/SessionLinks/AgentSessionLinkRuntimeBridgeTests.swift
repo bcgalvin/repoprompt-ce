@@ -4365,6 +4365,65 @@ final class AgentSessionLinkRuntimeBridgeTests: XCTestCase {
 
     // MARK: - Observer-side binding changes (audit issue 2)
 
+    func testLinklessPillEndpointCanCreateFirstExactLink() async throws {
+        let fixture = makeFixture()
+        let directory = try installLaneIntentStore(fixture)
+        let props = AgentModeViewModel.monitorPillProps(
+            sessionID: fixture.observer.sessionID,
+            published: nil,
+            currentEndpoint: fixture.observer.domainEndpoint,
+            eligibility: fixture.observer.eligibilityInput,
+            roleAllowsOutboundMonitoring: fixture.observer.roleAllowsOutboundMonitoring
+        )
+        XCTAssertTrue(props.canAdd)
+        XCTAssertFalse(props.isOverseer)
+        let outcome = try await fixture.bridge.addMonitorLink(
+            observerEndpoint: XCTUnwrap(props.endpoint),
+            targetEndpoint: fixture.target.domainEndpoint
+        )
+        guard case .added = outcome else { return XCTFail("First exact Add failed: \(outcome)") }
+        let snapshot = await fixture.authority.snapshot()
+        XCTAssertEqual(snapshot.activeLinkCount, 1)
+        let data = try Data(contentsOf: directory.appendingPathComponent(AgentSessionOversightIntentStore.filename))
+        let saved = try JSONDecoder().decode(AgentSessionOversightIntentDocument.self, from: data)
+        XCTAssertTrue(saved.links.contains(AgentSessionOversightIntent(
+            observerSessionID: fixture.observer.sessionID, targetSessionID: fixture.target.sessionID
+        )))
+    }
+
+    func testLinklessPillEndpointCapturedBeforeConsentRejectsSameSessionRebind() async throws {
+        let fixture = makeFixture()
+        let directory = try installLaneIntentStore(fixture)
+        let captured = AgentModeViewModel.monitorPillProps(
+            sessionID: fixture.observer.sessionID,
+            published: nil,
+            currentEndpoint: fixture.observer.domainEndpoint,
+            eligibility: fixture.observer.eligibilityInput,
+            roleAllowsOutboundMonitoring: fixture.observer.roleAllowsOutboundMonitoring
+        )
+        // Model a consent dialog remaining open while the same UUID gets a new incarnation.
+        let rebound = makeCandidate(
+            windowID: fixture.observer.windowID,
+            sessionID: fixture.observer.sessionID,
+            workspaceID: fixture.observer.workspaceID,
+            tabID: fixture.observer.tabID,
+            persistentBindingGeneration: UUID()
+        )
+        fixture.host.candidates = [rebound, fixture.target]
+        let outcome = try await fixture.bridge.addMonitorLink(
+            observerEndpoint: XCTUnwrap(captured.endpoint),
+            targetEndpoint: fixture.target.domainEndpoint
+        )
+        XCTAssertEqual(outcome, .rejected(message: AgentSessionLinkResolveFailure.rebinding.uiMessage))
+        let snapshot = await fixture.authority.snapshot()
+        XCTAssertEqual(snapshot.activeLinkCount, 0)
+        let file = directory.appendingPathComponent(AgentSessionOversightIntentStore.filename)
+        if FileManager.default.fileExists(atPath: file.path) {
+            let saved = try JSONDecoder().decode(AgentSessionOversightIntentDocument.self, from: Data(contentsOf: file))
+            XCTAssertTrue(saved.links.isEmpty, "Stale consent must not leave a durable intent")
+        }
+    }
+
     func testObserverRebindRevokesItsOutboundLink() async {
         let fixture = makeFixture()
         guard case .added = await addLink(fixture) else { return XCTFail("add failed") }
