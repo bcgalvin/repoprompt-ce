@@ -1412,7 +1412,8 @@ final class AgentSidebarOversightStableMenuTests: XCTestCase {
 
     /// Order contract: "Overseen by" — including its "Created and overseen by" collapse —
     /// leads "Overseeing" wherever both sections render: the menu's top sections, the Unlink
-    /// submenu, and the monitor pill popover. The hierarchy reads top-down.
+    /// submenu (where the groups are headed "Unlink overseer" / "Unlink overseen"), and the
+    /// monitor pill popover. The hierarchy reads top-down.
     func testOverseenBySectionLeadsOverseeingWhereBothSectionsExist() throws {
         let target = peer("Target", seed: 1, relationship: .linked(reference: link(11), peerCurrentlyEligible: true))
         let observer = peer("Observer", seed: 2, relationship: .linked(reference: link(12), peerCurrentlyEligible: true))
@@ -1428,7 +1429,7 @@ final class AgentSidebarOversightStableMenuTests: XCTestCase {
         )
         XCTAssertEqual(
             try submenu("Unlink", in: menu).items.map(\.title),
-            ["Overseen by", "Observer", "Overseeing", "Target"]
+            ["Unlink overseer", "Observer", "Unlink overseen", "Target"]
         )
         XCTAssertEqual(
             AgentMonitorPopoverLinkedSection.displayOrder(hasInbound: true, hasOutbound: true),
@@ -1581,7 +1582,7 @@ final class AgentSidebarOversightStableMenuTests: XCTestCase {
         ))
 
         let unlink = try submenu("Unlink", in: menu)
-        XCTAssertEqual(unlink.items.map(\.title), ["Overseen by", "Overseer"])
+        XCTAssertEqual(unlink.items.map(\.title), ["Unlink overseer", "Overseer"])
         XCTAssertFalse(unlink.items[0].isEnabled)
         XCTAssertEqual(unlink.items[1].accessibilityLabel(), "Unlink \"Overseer\"")
 
@@ -1642,7 +1643,7 @@ final class AgentSidebarOversightStableMenuTests: XCTestCase {
         ))
 
         let unlink = try submenu("Unlink", in: menu)
-        XCTAssertEqual(unlink.items.map(\.title), ["Overseeing", "Target"])
+        XCTAssertEqual(unlink.items.map(\.title), ["Unlink overseen", "Target"])
         fire(unlink.items[1])
         XCTAssertEqual(unlinked.count, 1)
         XCTAssertEqual(unlinked[0].0, menuProps.targetEndpoint)
