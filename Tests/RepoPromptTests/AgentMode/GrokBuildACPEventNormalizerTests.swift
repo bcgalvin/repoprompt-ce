@@ -124,10 +124,10 @@ final class GrokBuildACPEventNormalizerTests: XCTestCase {
             invalid[key] = value
             cases.append((label, [first, invalid], false, [:]))
         }
-        let halfBytes = AgentToolResultPersistencePolicy.cursorACPGeneratedDiffInputBytesLimit / 2
+        let halfBytes = ACPToolUpdateResultAdapter.generatedDiffInputBytesLimit / 2
         let longDetail = detail("x", String(repeating: "y", count: halfBytes), line: 20)
         cases.append(("aggregate byte limit", [longDetail, longDetail], false, [:]))
-        let quarterLines = AgentToolResultPersistencePolicy.cursorACPGeneratedDiffInputLineLimit / 4
+        let quarterLines = ACPToolUpdateResultAdapter.generatedDiffInputLineLimit / 4
         let manyLines = detail(
             String(repeating: "x\n", count: quarterLines), String(repeating: "y\n", count: quarterLines), line: 20
         )

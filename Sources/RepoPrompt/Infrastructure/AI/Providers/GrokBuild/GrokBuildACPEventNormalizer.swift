@@ -49,8 +49,8 @@ enum GrokBuildACPEventNormalizer {
               let details = metadata["details"] as? [[String: Any]], !details.isEmpty
         else { return nil }
 
-        let byteLimit = AgentToolResultPersistencePolicy.cursorACPGeneratedDiffInputBytesLimit
-        let lineLimit = AgentToolResultPersistencePolicy.cursorACPGeneratedDiffInputLineLimit
+        let byteLimit = ACPToolUpdateResultAdapter.generatedDiffInputBytesLimit
+        let lineLimit = ACPToolUpdateResultAdapter.generatedDiffInputLineLimit
         var totalBytes = 0
         var totalLines = 0
         var totalSplitLines = 0
