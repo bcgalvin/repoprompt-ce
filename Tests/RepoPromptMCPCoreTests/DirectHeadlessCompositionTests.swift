@@ -96,15 +96,16 @@ final class DirectHeadlessCompositionTests: XCTestCase {
 
     func testCanonicalAgentControlDescriptionsExplainCompoundTaskRoles() throws {
         let selectionClauses = [
-            "app-backed", "compound model_id", "without assigning a task role",
-            "workspace or global role defaults", "engineer, pair, or design"
+            "app-backed sessions", "compound model_id", "assigns no task role to a fresh session"
         ]
         let childClauses = [
-            "parented MCP child", "agent_run.start", "agent_manage.create_session",
-            "agent_manage.resume_session", "agent_explore", "parent must create a new child"
+            "agent_explore requires an engineer, pair, or design task role",
+            "start a child that will need Explore helpers with one of those role labels"
         ]
         let resumeClauses = [
-            "matching MCP control context", "retains its existing task role", "even if a role label"
+            "parented MCP sub-agents cannot use create_session or resume_session, whatever their role",
+            "matching MCP control context keeps its task role even if model_id is supplied",
+            "otherwise a role label installs that role", "an omitted or compound model_id installs none"
         ]
         let pointerClauses = [
             "effective workspace or global role defaults", "compound model_id",
@@ -117,16 +118,13 @@ final class DirectHeadlessCompositionTests: XCTestCase {
             let properties = try XCTUnwrap(schema["properties"]?.objectValue)
             let modelDescription = try XCTUnwrap(properties["model_id"]?.objectValue?["description"]?.stringValue)
             let required = selectionClauses + childClauses
-                + (toolName == MCPWindowToolName.agentManage ? resumeClauses : [])
+                + (toolName == MCPWindowToolName.agentManage ? resumeClauses : ["effective workspace or global role defaults"])
             cases.append(("\(toolName) description", definition.description, required))
             cases.append(("\(toolName).model_id", modelDescription, pointerClauses))
-            if toolName == MCPWindowToolName.agentRun {
-                XCTAssertTrue(definition.description.contains("Model Router"))
-                XCTAssertTrue(definition.description.contains("bypasses routing"))
-            }
         }
         for entry in cases {
             let text = entry.text.replacingOccurrences(of: "`", with: "").lowercased()
+            XCTAssertFalse(text.contains("role-default mapping"), entry.label)
             let missing = entry.required.filter { !text.contains($0.lowercased()) }
             XCTAssertTrue(
                 missing.isEmpty,

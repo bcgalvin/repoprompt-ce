@@ -692,7 +692,7 @@ final class AgentRunMCPToolServiceSteerResumeTests: XCTestCase {
             await viewModel.mcpDeactivateControlContext(sessionID: sessionID, cleanupSessionStore: true)
         }
         let context = try XCTUnwrap(session.mcpControlContext)
-        XCTAssertNil(context.taskLabelKind, "A compound model selection installs no task role")
+        XCTAssertNil(context.taskLabelKind, "Fixture activates without a task role.")
 
         XCTAssertThrowsError(try viewModel.mcpValidateAgentRunSpawnAllowed(sourceTabID: session.tabID)) { error in
             guard let mcpError = error as? MCPError, case let .invalidParams(message) = mcpError else {

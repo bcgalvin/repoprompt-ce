@@ -1140,24 +1140,19 @@ package enum MCPDomainCanonicalToolDefinitions {
               case var .object(modelID)? = properties["model_id"]
         else { return definition }
 
-        let disclosure = "For app-backed sessions, a compound `model_id` pins the exact target without assigning a task role to a fresh session. A parented MCP child with no task role cannot use `agent_run.start`, `agent_manage.create_session`, `agent_manage.resume_session`, or `agent_explore`. For read-only Explore helpers, the parent must create a new child using an `engineer`, `pair`, or `design` role label instead of a compound ID; `explore` cannot spawn additional Explore agents."
+        let disclosure = "**App-backed sessions:** a compound `model_id` pins the exact target but assigns no task role to a fresh session, and `agent_explore` requires an `engineer`, `pair`, or `design` task role; start a child that will need Explore helpers with one of those role labels."
         var description = definition.description
-        let selectionDescription: String
         if definition.name == MCPWindowToolName.agentRun {
             description = description
                 .replacingOccurrences(of: "effective global role-default mapping", with: "effective workspace or global role defaults")
                 .replacingOccurrences(of: "global role-default mapping", with: "effective workspace or global role defaults")
-                .replacingOccurrences(
-                    of: "for the authoritative label→model mapping.",
-                    with: "for the effective label→model mapping. Configure the applicable role default for its baseline model; eligible role-label starts may still be routed elsewhere by the Model Router."
-                )
-            selectionDescription = disclosure
+                .replacingOccurrences(of: "\n\n**Parallel agents**:", with: "\n\n\(disclosure)\n\n**Parallel agents**:")
             modelID["description"] = .string("[start] Role label from agent_manage.list_agents task_labels (explore, engineer, pair, design — resolved via effective workspace or global role defaults), or an explicit compound model_id from agents[].models[].model_id to pin an exact target. Defaults to pair when omitted. A compound model_id assigns no task role; see the tool description.")
         } else {
-            selectionDescription = "Role labels use the effective workspace or global role defaults shown in `list_agents.task_labels`; configure the applicable role default for its baseline model. On `resume_session`, a matching MCP control context retains its existing task role even if a role label is supplied; otherwise activation uses the resolved selection's task role.\n\n" + disclosure
+            let selectionDescription = disclosure + " Parented MCP sub-agents cannot use `create_session` or `resume_session`, whatever their role. On `resume_session`, a matching MCP control context keeps its task role even if `model_id` is supplied; otherwise a role label installs that role, and an omitted or compound `model_id` installs none."
+            description = description.replacingOccurrences(of: "\n\n**Operations**:", with: "\n\n\(selectionDescription)\n\n**Operations**:")
             modelID["description"] = .string("[create_session, resume_session] Role label from list_agents task_labels (explore, engineer, pair, design — resolved via effective workspace or global role defaults), or an explicit compound model_id from list_agents agents[].models[].model_id. A compound model_id assigns no task role; see the tool description.")
         }
-        description = description.replacingOccurrences(of: "\n\n**Operations**:", with: "\n\n\(selectionDescription)\n\n**Operations**:")
         properties["model_id"] = .object(modelID)
         schema["properties"] = .object(properties)
         return MCPDomainToolDefinition(
