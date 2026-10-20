@@ -28,16 +28,18 @@
                 RecordedEdit(
                     name: "search_replace-completed", jsonl: GrokBuild1062NativeEditFixtures.searchReplaceCompleted,
                     path: "/private/fixtures/grok-native-edit/fixture/probe.txt",
-                    removed: ["N7_BEFORE_MARKER"], added: ["N7_AFTER_MARKER"], failed: false
+                    removed: ["N7_BEFORE_MARKER"], added: ["N7_AFTER_MARKER"],
+                    removedLineNumbers: [7], addedLineNumbers: [7], failed: false
                 ),
                 RecordedEdit(
                     name: "write-completed", jsonl: GrokBuild1062NativeEditFixtures.writeCompleted,
                     path: "/fixtures/grok-native-edit/fixture/new_file.txt",
-                    removed: [], added: ["alpha", "beta", "gamma"], failed: false
+                    removed: [], added: ["alpha", "beta", "gamma"],
+                    removedLineNumbers: [], addedLineNumbers: [1, 2, 3], failed: false
                 ),
                 RecordedEdit(
                     name: "search_replace-failed", jsonl: GrokBuild1062NativeEditFixtures.searchReplaceFailed,
-                    path: nil, removed: [], added: [], failed: true
+                    path: nil, removed: [], added: [], removedLineNumbers: [], addedLineNumbers: [], failed: true
                 )
             ]
             var liveRows: [AgentChatItem] = []
@@ -70,6 +72,12 @@
                         let args = try XCTUnwrap(ToolJSON.rawObject(from: row.toolArgsJSON))
                         let originalArgs = try XCTUnwrap(update["rawInput"] as? [String: Any])
                         XCTAssertEqual(args as NSDictionary, originalArgs as NSDictionary, fixture.name)
+                    }
+                    if index == 1 || fixture.failed {
+                        XCTAssertFalse(
+                            row.toolResultJSON?.contains("\"unified_diff\"") ?? false,
+                            "\(fixture.name): proposed and failed edits must not gain a unified_diff"
+                        )
                     }
                     XCTAssertEqual(row.id, rowID, "\(fixture.name): merge must retain the initial row")
                     XCTAssertEqual(row.kind, index == 2 ? .toolResult : .toolCall, fixture.name)
@@ -138,6 +146,8 @@
             let path: String?
             let removed: [String]
             let added: [String]
+            let removedLineNumbers: [Int]
+            let addedLineNumbers: [Int]
             let failed: Bool
         }
 
@@ -172,6 +182,15 @@
             let added = lines.filter { $0.hasPrefix("+") && !$0.hasPrefix("+++") }.map { String($0.dropFirst()) }
             XCTAssertEqual(removed, expected.removed, "\(label): exact removed lines (empty for a new file)")
             XCTAssertEqual(added, expected.added, "\(label): exact added lines")
+            let document = UnifiedDiffCardRendering.parse(diff.diff)
+            XCTAssertEqual(
+                document.lines.filter { $0.kind == .deletion }.compactMap(\.oldLineNumber),
+                expected.removedLineNumbers, "\(label): removed lines retain file coordinates"
+            )
+            XCTAssertEqual(
+                document.lines.filter { $0.kind == .addition }.compactMap(\.newLineNumber),
+                expected.addedLineNumbers, "\(label): added lines retain file coordinates"
+            )
         }
 
         private func assertNoRawDiffText(in value: Any) {
