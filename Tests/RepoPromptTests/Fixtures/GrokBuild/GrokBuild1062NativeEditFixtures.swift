@@ -1,9 +1,9 @@
-// Recorded 2026-10-19/20: Grok Build 1.0.62 (1474f9cbdd91), grok-4.7,
-// RPCE ACP launch profile, Default permission. Source receipt:
-// live-capture-20261019T2347Z/part-a/fixtures-1062/*.jsonl.
-// Sanitized paths and session/prompt/tool-call/event IDs; all other wire bytes
-// are preserved, including intermediate Diff, rawInput/rawOutput and final LF.
-// Embedded from red eabfe4fdc; historical synthetic repro: 0e8c981e.
+/// Recorded 2026-10-19/20: Grok Build 1.0.62 (1474f9cbdd91), grok-4.7,
+/// RPCE ACP launch profile, Default permission. Source receipt:
+/// live-capture-20261019T2347Z/part-a/fixtures-1062/*.jsonl.
+/// Sanitized paths and session/prompt/tool-call/event IDs; all other wire bytes
+/// are preserved, including intermediate Diff, rawInput/rawOutput and final LF.
+/// Embedded from red eabfe4fdc; historical synthetic repro: 0e8c981e.
 enum GrokBuild1062NativeEditFixtures {
     static let searchReplaceCompleted = #"""
     {"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"fixture-session-1","update":{"sessionUpdate":"tool_call","toolCallId":"fixture-tool-call-1","title":"search_replace","rawInput":{"file_path":"/fixtures/grok-native-edit/fixture/probe.txt","old_string":"N7_BEFORE_MARKER","new_string":"N7_AFTER_MARKER"},"_meta":{"x.ai/tool":{"version":1,"name":"search_replace","kind":"edit","namespace":"grok_build","label":"Edit","read_only":false}}},"_meta":{"totalTokens":16864,"requestTrimmedTokens":0,"eventId":"fixture-event-1","agentTimestampMs":1792453706194,"promptId":"fixture-prompt-1","streamStartMs":1792453705430,"turnStartMs":1792453700932,"updateType":"ToolCall","updateParams":{"toolCallId":"fixture-tool-call-1","title":"search_replace","kind":"Other","status":"Pending"}}}}

@@ -1,12 +1,9 @@
 import Foundation
 
-/// Grok Build session-update normalizer. grok 1.0.3 emits only standard ACP update kinds
-/// inside the `session/update` envelope (verified live: agent_message_chunk,
-/// agent_thought_chunk, user_message_chunk, tool_call, tool_call_update,
-/// available_commands_update, session_info_update); its x.ai extension updates ride
-/// separate `_x.ai/*` methods that never reach this normalizer. So v1 is a thin adapter:
-/// terminal tool updates get the shared canonical durable-result shape, everything else
-/// delegates to the default normalizer, and unknown variants are ignored there.
+/// Grok Build session-update normalizer. Native search_replace/write calls are
+/// classified as edit before shared transcript merging. Terminal tool updates reuse
+/// the shared canonical durable-result adapter; all other updates delegate to the
+/// default ACP normalizer.
 enum GrokBuildACPEventNormalizer {
     static func normalize(_ payload: [String: Any]) -> [NormalizedAgentRuntimeEvent] {
         guard let sessionUpdate = (payload["sessionUpdate"] as? String)?.lowercased() else {
@@ -15,8 +12,15 @@ enum GrokBuildACPEventNormalizer {
 
         switch sessionUpdate {
         case "tool_call", "tool_call_update":
+            var normalizedPayload = payload
+            if sessionUpdate == "tool_call" {
+                let nativeName = ACPRuntimeEventParsing.normalizedToolName(from: payload)
+                if nativeName == "search_replace" || nativeName == "write" {
+                    normalizedPayload["toolName"] = "edit"
+                }
+            }
             return ACPDefaultSessionUpdateNormalizer.normalize(
-                ACPToolUpdateResultAdapter.adaptedTerminalToolUpdatePayload(payload, sessionUpdate: sessionUpdate),
+                ACPToolUpdateResultAdapter.adaptedTerminalToolUpdatePayload(normalizedPayload, sessionUpdate: sessionUpdate),
                 providerID: .grokBuild
             )
         default:

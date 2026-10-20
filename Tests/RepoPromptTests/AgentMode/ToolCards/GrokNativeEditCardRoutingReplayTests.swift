@@ -5,13 +5,13 @@
 
     @MainActor
     final class GrokNativeEditCardRoutingReplayTests: XCTestCase {
-        // Recorded 2026-10-19/20: Grok Build 1.0.62 (1474f9cbdd91), grok-4.7,
-        // RPCE ACP launch profile, Default permission. Source receipt:
-        // live-capture-20261019T2347Z/part-a/fixtures-1062/*.jsonl.
-        // Only disposable path prefixes and session/prompt/tool-call/event IDs are
-        // sanitized; wire order, absent/null fields, intermediate Diff, rawInput,
-        // rawOutput and line metadata are retained. Historical synthetic repro:
-        // 0e8c981e; this replaces its 1.0.45 shape and AnyView reflection oracle.
+        /// Recorded 2026-10-19/20: Grok Build 1.0.62 (1474f9cbdd91), grok-4.7,
+        /// RPCE ACP launch profile, Default permission. Source receipt:
+        /// live-capture-20261019T2347Z/part-a/fixtures-1062/*.jsonl.
+        /// Only disposable path prefixes and session/prompt/tool-call/event IDs are
+        /// sanitized; wire order, absent/null fields, intermediate Diff, rawInput,
+        /// rawOutput and line metadata are retained. Historical synthetic repro:
+        /// 0e8c981e; this replaces its 1.0.45 shape and AnyView reflection oracle.
         func testRecorded1062NativeEditsRemainDiffCapableAfterSaveLoad() async throws {
             let viewModel = AgentModeViewModel(
                 testWindowID: -997,
@@ -148,7 +148,7 @@
         }
 
         private func recordedUpdates(from text: String) throws -> [[String: Any]] {
-            return try text.split(separator: "\n").compactMap { line in
+            try text.split(separator: "\n").compactMap { line in
                 let envelope = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any])
                 // Same method guard as the ACP controller: x.ai interaction notices
                 // are not session updates and must not enter this normalizer.
@@ -185,9 +185,13 @@
                 for key in ["oldText", "newText", "old_text", "new_text", "old_string", "new_string"] {
                     XCTAssertNil(object[key], "saved summary must not retain raw \(key) fields")
                 }
-                for child in object.values { assertNoRawDiffText(in: child) }
+                for child in object.values {
+                    assertNoRawDiffText(in: child)
+                }
             } else if let array = value as? [Any] {
-                for child in array { assertNoRawDiffText(in: child) }
+                for child in array {
+                    assertNoRawDiffText(in: child)
+                }
             }
         }
     }
