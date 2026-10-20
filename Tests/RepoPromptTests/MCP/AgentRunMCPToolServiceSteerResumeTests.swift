@@ -679,6 +679,38 @@ final class AgentRunMCPToolServiceSteerResumeTests: XCTestCase {
         XCTAssertFalse(session.isMCPOriginated)
     }
 
+    func testSpawnRefusalHintNamesEligibleExploreTaskRoles() async throws {
+        let window = try await makeWindow()
+        let viewModel = window.agentModeViewModel
+        let sessionID = UUID()
+        let session = try await makeWorkspaceOwnedSession(in: window, sessionID: sessionID)
+        session.parentSessionID = UUID()
+        _ = try await viewModel.mcpActivateControlContext(
+            forTabID: session.tabID, sessionID: sessionID, originatingConnectionID: nil
+        )
+        addTeardownBlock { @MainActor in
+            await viewModel.mcpDeactivateControlContext(sessionID: sessionID, cleanupSessionStore: true)
+        }
+        let context = try XCTUnwrap(session.mcpControlContext)
+        XCTAssertNil(context.taskLabelKind, "A compound model selection installs no task role")
+
+        XCTAssertThrowsError(try viewModel.mcpValidateAgentRunSpawnAllowed(sourceTabID: session.tabID)) { error in
+            guard let mcpError = error as? MCPError, case let .invalidParams(message) = mcpError else {
+                return XCTFail("Expected invalidParams from the real spawn guard, got: \(error)")
+            }
+            XCTAssertTrue(
+                message?.contains("sub-agents with an engineer, pair, or design task role may start read-only explore children with agent_explore.") == true,
+                "Spawn refusal must name the eligible Explore task roles; got: \(message ?? "missing message")"
+            )
+        }
+
+        session.parentSessionID = nil
+        XCTAssertNoThrow(
+            try viewModel.mcpValidateAgentRunSpawnAllowed(sourceTabID: session.tabID),
+            "A nil-role MCP session without a parent remains allowed to spawn"
+        )
+    }
+
     func testLinkedResidentResumeAndExistingTabStartRefuseBeforeActivation() async throws {
         let window = try await makeWindow()
         let sessionID = UUID()

@@ -94,6 +94,43 @@ final class DirectHeadlessCompositionTests: XCTestCase {
         }
     }
 
+    func testCanonicalAgentControlDescriptionsExplainCompoundTaskRoles() throws {
+        let selectionClauses = [
+            "app-backed", "compound model_id", "without assigning a task role",
+            "workspace or global role defaults", "engineer, pair, or design"
+        ]
+        let childClauses = [
+            "parented MCP child", "agent_run.start", "agent_manage.create_session",
+            "agent_manage.resume_session", "agent_explore", "parent must create a new child"
+        ]
+        let resumeClauses = [
+            "matching MCP control context", "retains its existing task role", "even if a role label"
+        ]
+        var cases: [(label: String, text: String, required: [String])] = []
+        for toolName in [MCPWindowToolName.agentRun, MCPWindowToolName.agentManage] {
+            let definition = try XCTUnwrap(MCPDomainCanonicalToolDefinitions.definition(named: toolName))
+            let schema = try XCTUnwrap(definition.inputSchema.objectValue)
+            let properties = try XCTUnwrap(schema["properties"]?.objectValue)
+            let modelDescription = try XCTUnwrap(properties["model_id"]?.objectValue?["description"]?.stringValue)
+            let required = selectionClauses + childClauses
+                + (toolName == MCPWindowToolName.agentManage ? resumeClauses : [])
+            cases.append(("\(toolName) description", definition.description, required))
+            cases.append(("\(toolName).model_id", modelDescription, required))
+            if toolName == MCPWindowToolName.agentRun {
+                XCTAssertTrue(definition.description.contains("Model Router"))
+                XCTAssertTrue(definition.description.contains("bypasses routing"))
+            }
+        }
+        for entry in cases {
+            let text = entry.text.replacingOccurrences(of: "`", with: "").lowercased()
+            let missing = entry.required.filter { !text.contains($0.lowercased()) }
+            XCTAssertTrue(
+                missing.isEmpty,
+                "\(entry.label) is missing compound task-role guidance: \(missing.joined(separator: "; "))"
+            )
+        }
+    }
+
     func testCanonicalOracleSendToolsAdvertiseImageAttachments() throws {
         for toolName in ["ask_oracle", "oracle_send"] {
             let definition = try XCTUnwrap(MCPDomainCanonicalToolDefinitions.definition(named: toolName))
