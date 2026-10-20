@@ -5,13 +5,7 @@
 
     @MainActor
     final class GrokNativeEditCardRoutingReplayTests: XCTestCase {
-        /// Recorded 2026-10-19/20: Grok Build 1.0.62 (1474f9cbdd91), grok-4.7,
-        /// RPCE ACP launch profile, Default permission. Source receipt:
-        /// live-capture-20261019T2347Z/part-a/fixtures-1062/*.jsonl.
-        /// Only disposable path prefixes and session/prompt/tool-call/event IDs are
-        /// sanitized; wire order, absent/null fields, intermediate Diff, rawInput,
-        /// rawOutput and line metadata are retained. Historical synthetic repro:
-        /// 0e8c981e; this replaces its 1.0.45 shape and AnyView reflection oracle.
+        /// See GrokBuild1062NativeEditFixtures for recording provenance and sanitization.
         func testRecorded1062NativeEditsRemainDiffCapableAfterSaveLoad() async throws {
             let viewModel = AgentModeViewModel(
                 testWindowID: -997,
