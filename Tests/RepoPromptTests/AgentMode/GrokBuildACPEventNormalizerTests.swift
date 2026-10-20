@@ -99,6 +99,68 @@ final class GrokBuildACPEventNormalizerTests: XCTestCase {
         }
     }
 
+    func testTerminalEditDiffUsesBoundedPostEditCoordinates() throws {
+        func detail(_ old: String, _ new: String, line: Int) -> [String: Any] {
+            ["old_string": old, "new_string": new, "old_line": line, "new_line": line]
+        }
+        let first = detail("a", "b\nc", line: 3)
+        let second = detail("d\ne", "f", line: 10)
+        let third = detail("g", "h", line: 15)
+        var cases: [(label: String, details: [[String: Any]], enriched: Bool)] = [
+            ("post-edit starts after additions and removals", [first, second, third], true)
+        ]
+        for (label, key, value) in [
+            ("missing old", "old_line", nil),
+            ("missing new", "new_line", nil),
+            ("zero", "new_line", 0),
+            ("negative", "old_line", -1),
+            ("fractional", "new_line", 10.5),
+            ("string", "old_line", "10"),
+            ("boolean", "new_line", true),
+            ("different starts", "old_line", 9)
+        ] as [(String, String, Any?)] {
+            var invalid = second
+            invalid[key] = value
+            cases.append((label, [first, invalid], false))
+        }
+        let halfBytes = AgentToolResultPersistencePolicy.cursorACPGeneratedDiffInputBytesLimit / 2
+        let longDetail = detail("x", String(repeating: "y", count: halfBytes), line: 20)
+        cases.append(("aggregate byte limit", [longDetail, longDetail], false))
+        let quarterLines = AgentToolResultPersistencePolicy.cursorACPGeneratedDiffInputLineLimit / 4
+        let manyLines = detail(
+            String(repeating: "x\n", count: quarterLines), String(repeating: "y\n", count: quarterLines), line: 20
+        )
+        cases.append(("aggregate line limit", [manyLines, manyLines], false))
+
+        for fixture in cases {
+            let item: [String: Any] = [
+                "type": "diff", "path": "/fixtures/coordinates.txt",
+                "oldText": "a", "newText": "b\nc", "_meta": ["details": fixture.details]
+            ]
+            let events = GrokBuildACPEventNormalizer.normalize([
+                "sessionUpdate": "tool_call_update", "toolCallId": "coordinates", "status": "completed", "content": [item]
+            ])
+            guard case let .stream(result) = events.first else {
+                XCTFail("\(fixture.label): expected terminal stream result")
+                continue
+            }
+            let object = try XCTUnwrap(ToolJSON.rawObject(from: result.toolResultJSON), fixture.label)
+            let content = try XCTUnwrap(object["content"] as? [[String: Any]], fixture.label)
+            let actual = try XCTUnwrap(content.first, fixture.label)
+            var originalFields = actual
+            originalFields.removeValue(forKey: "unified_diff")
+            XCTAssertEqual(originalFields as NSDictionary, item as NSDictionary, "\(fixture.label): preserve original fields")
+            if fixture.enriched {
+                let diff = try XCTUnwrap(actual["unified_diff"] as? String, fixture.label)
+                let document = UnifiedDiffCardRendering.parse(diff)
+                XCTAssertEqual(document.lines.filter { $0.kind == .deletion }.compactMap(\.oldLineNumber), [3, 9, 10, 15])
+                XCTAssertEqual(document.lines.filter { $0.kind == .addition }.compactMap(\.newLineNumber), [3, 4, 10, 15])
+            } else {
+                XCTAssertNil(actual["unified_diff"], "\(fixture.label): skip the entire item")
+            }
+        }
+    }
+
     func testUnknownXAIDiscriminantIsIgnored() {
         let events = GrokBuildACPEventNormalizer.normalize([
             "sessionUpdate": "turn_completed",
