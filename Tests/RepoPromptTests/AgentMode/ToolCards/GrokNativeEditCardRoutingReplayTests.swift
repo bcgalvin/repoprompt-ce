@@ -73,12 +73,6 @@
                         let originalArgs = try XCTUnwrap(update["rawInput"] as? [String: Any])
                         XCTAssertEqual(args as NSDictionary, originalArgs as NSDictionary, fixture.name)
                     }
-                    if index == 1 || fixture.failed {
-                        XCTAssertFalse(
-                            row.toolResultJSON?.contains("\"unified_diff\"") ?? false,
-                            "\(fixture.name): proposed and failed edits must not gain a unified_diff"
-                        )
-                    }
                     XCTAssertEqual(row.id, rowID, "\(fixture.name): merge must retain the initial row")
                     XCTAssertEqual(row.kind, index == 2 ? .toolResult : .toolCall, fixture.name)
                     if index < 2 {

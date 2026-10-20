@@ -106,8 +106,9 @@ final class GrokBuildACPEventNormalizerTests: XCTestCase {
         let first = detail("a", "b\nc", line: 3)
         let second = detail("d\ne", "f", line: 10)
         let third = detail("g", "h", line: 15)
-        var cases: [(label: String, details: [[String: Any]], enriched: Bool)] = [
-            ("post-edit starts after additions and removals", [first, second, third], true)
+        var cases: [(label: String, details: [[String: Any]], enriched: Bool, rawOutput: [String: Any])] = [
+            ("post-edit starts after additions and removals", [first, second, third], true, [:]),
+            ("completed status with failing raw output", [first], false, ["success": false])
         ]
         for (label, key, value) in [
             ("missing old", "old_line", nil),
@@ -121,16 +122,19 @@ final class GrokBuildACPEventNormalizerTests: XCTestCase {
         ] as [(String, String, Any?)] {
             var invalid = second
             invalid[key] = value
-            cases.append((label, [first, invalid], false))
+            cases.append((label, [first, invalid], false, [:]))
         }
         let halfBytes = AgentToolResultPersistencePolicy.cursorACPGeneratedDiffInputBytesLimit / 2
         let longDetail = detail("x", String(repeating: "y", count: halfBytes), line: 20)
-        cases.append(("aggregate byte limit", [longDetail, longDetail], false))
+        cases.append(("aggregate byte limit", [longDetail, longDetail], false, [:]))
         let quarterLines = AgentToolResultPersistencePolicy.cursorACPGeneratedDiffInputLineLimit / 4
         let manyLines = detail(
             String(repeating: "x\n", count: quarterLines), String(repeating: "y\n", count: quarterLines), line: 20
         )
-        cases.append(("aggregate line limit", [manyLines, manyLines], false))
+        cases.append(("aggregate line limit", [manyLines, manyLines], false, [:]))
+        let carriageReturns = String(repeating: "\r", count: 8000)
+        let loneCRDetail = detail(carriageReturns + "a", carriageReturns + "b", line: Int.max - 800)
+        cases.append(("lone CR split-line limit prevents offset overflow", [loneCRDetail], false, [:]))
 
         for fixture in cases {
             let item: [String: Any] = [
@@ -138,7 +142,8 @@ final class GrokBuildACPEventNormalizerTests: XCTestCase {
                 "oldText": "a", "newText": "b\nc", "_meta": ["details": fixture.details]
             ]
             let events = GrokBuildACPEventNormalizer.normalize([
-                "sessionUpdate": "tool_call_update", "toolCallId": "coordinates", "status": "completed", "content": [item]
+                "sessionUpdate": "tool_call_update", "toolCallId": "coordinates", "status": "completed", "content": [item],
+                "rawOutput": fixture.rawOutput
             ])
             guard case let .stream(result) = events.first else {
                 XCTFail("\(fixture.label): expected terminal stream result")

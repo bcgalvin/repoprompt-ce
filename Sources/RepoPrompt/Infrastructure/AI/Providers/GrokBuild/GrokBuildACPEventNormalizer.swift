@@ -53,6 +53,7 @@ enum GrokBuildACPEventNormalizer {
         let lineLimit = AgentToolResultPersistencePolicy.cursorACPGeneratedDiffInputLineLimit
         var totalBytes = 0
         var totalLines = 0
+        var totalSplitLines = 0
         var precedingDelta = 0
         var chunks: [DiffChunk] = []
         for detail in details {
@@ -70,6 +71,8 @@ enum GrokBuildACPEventNormalizer {
 
             let oldLines = String.splitContentPreservingLineEndings(oldText).0
             let newLines = String.splitContentPreservingLineEndings(newText).0
+            totalSplitLines += oldLines.count + newLines.count
+            guard totalSplitLines <= lineLimit else { return nil }
             // Grok reports both coordinates in post-edit text. Undo earlier edits'
             // line deltas; build() reapplies those deltas to derive the new starts.
             let (oldStart, overflow) = newLine.subtractingReportingOverflow(precedingDelta)
@@ -87,7 +90,7 @@ enum GrokBuildACPEventNormalizer {
 
     private static func positiveLineNumber(_ value: Any?) -> Int? {
         guard let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID(),
-              let integer = number as? Int, integer > 0, NSNumber(value: integer) == number
+              let integer = number as? Int, integer > 0
         else { return nil }
         return integer
     }
