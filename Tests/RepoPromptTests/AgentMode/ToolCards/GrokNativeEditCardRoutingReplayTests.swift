@@ -32,18 +32,23 @@
 
             let fixtures = [
                 RecordedEdit(
-                    name: "search_replace-completed", path: "/private/fixtures/grok-native-edit/fixture/probe.txt",
+                    name: "search_replace-completed", jsonl: GrokBuild1062NativeEditFixtures.searchReplaceCompleted,
+                    path: "/private/fixtures/grok-native-edit/fixture/probe.txt",
                     removed: ["N7_BEFORE_MARKER"], added: ["N7_AFTER_MARKER"], failed: false
                 ),
                 RecordedEdit(
-                    name: "write-completed", path: "/fixtures/grok-native-edit/fixture/new_file.txt",
+                    name: "write-completed", jsonl: GrokBuild1062NativeEditFixtures.writeCompleted,
+                    path: "/fixtures/grok-native-edit/fixture/new_file.txt",
                     removed: [], added: ["alpha", "beta", "gamma"], failed: false
                 ),
-                RecordedEdit(name: "search_replace-failed", path: nil, removed: [], added: [], failed: true)
+                RecordedEdit(
+                    name: "search_replace-failed", jsonl: GrokBuild1062NativeEditFixtures.searchReplaceFailed,
+                    path: nil, removed: [], added: [], failed: true
+                )
             ]
             var liveRows: [AgentChatItem] = []
             for fixture in fixtures {
-                let updates = try recordedUpdates(named: fixture.name)
+                let updates = try recordedUpdates(from: fixture.jsonl)
                 XCTAssertEqual(updates.count, 3, fixture.name)
                 let callID = try XCTUnwrap(updates.first?["toolCallId"] as? String)
                 let invocationID = ACPRuntimeEventParsing.stableInvocationUUID(rawValue: callID)
@@ -135,18 +140,14 @@
 
         private struct RecordedEdit {
             let name: String
+            let jsonl: String
             let path: String?
             let removed: [String]
             let added: [String]
             let failed: Bool
         }
 
-        private func recordedUpdates(named name: String) throws -> [[String: Any]] {
-            // Source-relative loading avoids a Package.swift resources change.
-            let fixtures = URL(fileURLWithPath: #filePath)
-                .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-                .appendingPathComponent("Fixtures/GrokBuild/1.0.62")
-            let text = try String(contentsOf: fixtures.appendingPathComponent("\(name).jsonl"), encoding: .utf8)
+        private func recordedUpdates(from text: String) throws -> [[String: Any]] {
             return try text.split(separator: "\n").compactMap { line in
                 let envelope = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any])
                 // Same method guard as the ACP controller: x.ai interaction notices
