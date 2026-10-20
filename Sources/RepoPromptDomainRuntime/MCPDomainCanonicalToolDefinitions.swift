@@ -1140,7 +1140,7 @@ package enum MCPDomainCanonicalToolDefinitions {
               case var .object(modelID)? = properties["model_id"]
         else { return definition }
 
-        let disclosure = "**App-backed sessions:** a compound `model_id` pins the exact target but assigns no task role to a fresh session, and `agent_explore` requires an `engineer`, `pair`, or `design` task role; start a child that will need Explore helpers with one of those role labels."
+        let disclosure = "**App-backed sessions:** a compound `model_id` pins the exact target but assigns no task role to a fresh session, and `agent_explore` requires an `engineer`, `pair`, or `design` task role; start a child that will need Explore helpers with one of those role labels. To run a role on a specific model, set that role's default."
         var description = definition.description
         if definition.name == MCPWindowToolName.agentRun {
             description = description
