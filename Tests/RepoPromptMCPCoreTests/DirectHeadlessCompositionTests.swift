@@ -96,7 +96,8 @@ final class DirectHeadlessCompositionTests: XCTestCase {
 
     func testCanonicalAgentControlDescriptionsExplainCompoundTaskRoles() throws {
         let selectionClauses = [
-            "app-backed sessions", "compound model_id", "assigns no task role to a fresh session"
+            "app-backed sessions", "compound model_id", "assigns no task role to a fresh session",
+            "set that role's default"
         ]
         let childClauses = [
             "agent_explore requires an engineer, pair, or design task role",
