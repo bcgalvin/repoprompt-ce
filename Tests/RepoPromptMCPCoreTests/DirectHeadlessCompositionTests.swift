@@ -106,6 +106,10 @@ final class DirectHeadlessCompositionTests: XCTestCase {
         let resumeClauses = [
             "matching MCP control context", "retains its existing task role", "even if a role label"
         ]
+        let pointerClauses = [
+            "effective workspace or global role defaults", "compound model_id",
+            "assigns no task role", "see the tool description"
+        ]
         var cases: [(label: String, text: String, required: [String])] = []
         for toolName in [MCPWindowToolName.agentRun, MCPWindowToolName.agentManage] {
             let definition = try XCTUnwrap(MCPDomainCanonicalToolDefinitions.definition(named: toolName))
@@ -115,7 +119,7 @@ final class DirectHeadlessCompositionTests: XCTestCase {
             let required = selectionClauses + childClauses
                 + (toolName == MCPWindowToolName.agentManage ? resumeClauses : [])
             cases.append(("\(toolName) description", definition.description, required))
-            cases.append(("\(toolName).model_id", modelDescription, required))
+            cases.append(("\(toolName).model_id", modelDescription, pointerClauses))
             if toolName == MCPWindowToolName.agentRun {
                 XCTAssertTrue(definition.description.contains("Model Router"))
                 XCTAssertTrue(definition.description.contains("bypasses routing"))
