@@ -8986,7 +8986,7 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
             return
         }
         throw MCPError.invalidParams(
-            "Sub-agents cannot start additional agent runs. Only top-level MCP-started agent sessions may spawn sub-agents; non-explore sub-agents may start read-only explore children with agent_explore."
+            "Sub-agents cannot start additional agent runs. Only top-level MCP-started agent sessions may spawn sub-agents; sub-agents with an engineer, pair, or design task role may start read-only explore children with agent_explore."
         )
     }
 
