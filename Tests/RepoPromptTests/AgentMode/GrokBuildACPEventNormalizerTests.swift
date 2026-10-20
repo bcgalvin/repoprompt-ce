@@ -58,6 +58,47 @@ final class GrokBuildACPEventNormalizerTests: XCTestCase {
         XCTAssertTrue(json.contains("failed"), "missing failed status in \(json)")
     }
 
+    func testNativeEditClassificationIsExact() throws {
+        let repoPromptTool = "mcp__\(RepoPromptMCPServerConfiguration.defaultServerName)__apply_edits"
+        let cases: [(label: String, identity: [String: Any], expected: String)] = [
+            ("1.0.62 search_replace", ["title": "search_replace"], "edit"),
+            ("1.0.62 write", ["title": "write"], "edit"),
+            ("legacy search_replace", ["title": "search_replace", "kind": "other", "status": "pending"], "edit"),
+            ("legacy write", ["title": "write", "kind": "other", "status": "pending"], "edit"),
+            ("explicit native identity", ["toolName": "write", "title": "Write a file"], "edit"),
+            ("explicit identity wins title", ["toolName": "read_file", "title": "write"], "read_file"),
+            ("RepoPrompt MCP identity", ["toolName": repoPromptTool, "title": "write"], repoPromptTool),
+            ("external MCP identity", ["toolName": "mcp__external__write", "title": "write"], "mcp__external__write"),
+            ("namespaced identity", ["title": "functions.search_replace"], "functions.search_replace"),
+            ("unrelated native", ["title": "grep"], "grep"),
+            ("kind is not native identity", ["title": "grep", "kind": "edit"], "grep"),
+            ("nested metadata is not identity", ["title": "grep", "_meta": ["x.ai/tool": ["name": "write"]]], "grep"),
+            ("hashline excluded", ["title": "hashline_edit"], "hashline_edit"),
+            ("apply_patch excluded", ["title": "apply_patch"], "apply_patch"),
+            ("no prefix matching", ["title": "write_file"], "write_file"),
+            ("case is exact", ["title": "Search_Replace"], "Search_Replace")
+        ]
+        let args: [String: Any] = ["file_path": "/fixtures/classification.txt", "content": "unchanged\n"]
+        for fixture in cases {
+            let callID = "classification-\(fixture.label)"
+            var payload = fixture.identity
+            payload["sessionUpdate"] = "tool_call"
+            payload["toolCallId"] = callID
+            payload["rawInput"] = args
+            let events = GrokBuildACPEventNormalizer.normalize(payload)
+            XCTAssertEqual(events.count, 1, fixture.label)
+            guard case let .stream(result) = events.first else {
+                XCTFail("\(fixture.label): expected one stream event")
+                continue
+            }
+            XCTAssertEqual(result.toolName, fixture.expected, "\(fixture.label): classify only the exact native identity")
+            XCTAssertEqual(result.type, "tool_call", fixture.label)
+            XCTAssertEqual(result.toolInvocationID, ACPRuntimeEventParsing.stableInvocationUUID(rawValue: callID), fixture.label)
+            let actualArgs = try XCTUnwrap(ToolJSON.rawObject(from: result.toolArgsJSON), fixture.label)
+            XCTAssertEqual(actualArgs as NSDictionary, args as NSDictionary, "\(fixture.label): preserve native arguments")
+        }
+    }
+
     func testUnknownXAIDiscriminantIsIgnored() {
         let events = GrokBuildACPEventNormalizer.normalize([
             "sessionUpdate": "turn_completed",
