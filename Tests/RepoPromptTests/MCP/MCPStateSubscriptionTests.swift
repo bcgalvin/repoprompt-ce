@@ -841,6 +841,7 @@ private final class ExecutionCounter: @unchecked Sendable {
                 XCTAssertNil(snapshot.pendingClientID)
                 XCTAssertNil(snapshot.pendingApprovalGeneration)
                 XCTAssertNil(snapshot.pendingApprovalExecutablePath)
+                XCTAssertNotEqual(snapshot.diagnostics, MCPDiagnostics(), "only diagnostic publications may follow the final clear")
             }
         }
 
