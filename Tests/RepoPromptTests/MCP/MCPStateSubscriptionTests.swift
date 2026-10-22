@@ -835,11 +835,13 @@ private final class ExecutionCounter: @unchecked Sendable {
             XCTAssertEqual(approvalPrefix.map(\.pendingClientID), [nil, "same-name", nil, "same-name", nil])
             XCTAssertEqual(approvalPrefix.map(\.pendingApprovalGeneration), [nil, first, nil, second, nil])
             XCTAssertEqual(approvalPrefix.map(\.pendingApprovalExecutablePath), [nil, nil, nil, nil, nil])
-            let markerSnapshot = try XCTUnwrap(snapshotsB.first { $0.diagnostics == marker })
-            XCTAssertNil(markerSnapshot.pendingClientID)
-            XCTAssertNil(markerSnapshot.pendingApprovalGeneration)
-            XCTAssertNil(markerSnapshot.pendingApprovalExecutablePath)
-            XCTAssertEqual(snapshotsB.map(\.pendingApprovalGeneration), [nil, first, nil, second, nil])
+            let approvalSuffix = snapshotsB.dropFirst(5)
+            _ = try XCTUnwrap(approvalSuffix.first { $0.diagnostics == marker })
+            for snapshot in approvalSuffix {
+                XCTAssertNil(snapshot.pendingClientID)
+                XCTAssertNil(snapshot.pendingApprovalGeneration)
+                XCTAssertNil(snapshot.pendingApprovalExecutablePath)
+            }
         }
 
         func testExplicitDenialRemainsConnectionSpecific() async {
