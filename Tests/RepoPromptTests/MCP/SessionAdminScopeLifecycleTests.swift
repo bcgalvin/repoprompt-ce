@@ -8578,10 +8578,96 @@ final class SessionAdminInventoryReadTests: XCTestCase {
                 switch duringRun {
                 case "revoke-active": _ = bridge.delegationScopes.revoke(scopeID: granted.id)
                 case "delete-active":
-                    let registry = AgentSessionDeletionRegistry.shared
-                    let token = try registry.beginDurableDeletion(sessionID: targetID)
-                    try FileManager.default.removeItem(at: savedURL)
-                    await registry.didCommitDurableDeletion(token)
+                    // Diagnostic #1454: hold the real attempt cleanup before the barrier's
+                    // unchanged provider closure can register its detached Claude transfer.
+                    let session = try XCTUnwrap(targetVM.sessions[targetTab.id])
+                    let ownership = try XCTUnwrap(session.activeRunOwnership)
+                    let original = try XCTUnwrap(session.runAttemptTerminalResources)
+                    guard session.runState.isActive, original.ownership == ownership, !original.isClaimed,
+                          session.claudeController === controller
+                    else { return XCTFail("#1454 requires the original active attempt and unclaimed native resources") }
+                    let release = AgentSessionLinkStopSignal<Void>()
+                    var entered = false
+                    var originalFinished = false
+                    var deletionReturned = false
+                    targetVM.test_setBeforeCancellationCommit { cancelled in
+                        XCTAssertTrue(cancelled === session)
+                        print("#1454 phase=cancel-entry active=\(cancelled.runState.isActive) prepared=\(manager.preparedOversightWindows[targetID] != nil) retiring=\(manager.retiringPreparedOversightWindows[targetID] != nil)")
+                    }
+                    defer { targetVM.test_setBeforeCancellationCommit(nil) }
+                    session.installRunAttemptTerminalResources(ownership: ownership) { terminalState in
+                        let cleanup = original.claim(for: ownership, terminalState: terminalState)
+                        XCTAssertNotNil(cleanup, "Preserve the original attempt's lease cleanup")
+                        return {
+                            entered = true
+                            print("#1454 phase=attempt-held originalClaimed=\(original.isClaimed)")
+                            await release.value()
+                            await cleanup?()
+                            originalFinished = true
+                        }
+                    }
+                    print("#1454 phase=installed attempt=\(ownership.attemptID) active=\(session.runState.isActive) attached=\(session.claudeController === controller)")
+                    let deletion = Task { @MainActor in
+                        defer { deletionReturned = true }
+                        let registry = AgentSessionDeletionRegistry.shared
+                        let token = try registry.beginDurableDeletion(sessionID: targetID)
+                        do { try FileManager.default.removeItem(at: savedURL) }
+                        catch { registry.didFailDurableDeletion(token)
+                            throw error
+                        }
+                        await registry.didCommitDurableDeletion(token)
+                        manager.schedulePreparedOversightCleanup()
+                    }
+                    @MainActor func drain() async {
+                        release.finish(())
+                        _ = await deletion.result
+                        // Keep the exact VM/session alive and join the existing barrier, not a
+                        // new attempt or a diagnostic-owned provider shutdown.
+                        XCTAssertTrue(targetVM.sessions[targetTab.id] === session)
+                        await targetVM.cancelAgentRun(tabID: targetTab.id, completion: .terminalTeardownCompleted, origin: .internalLifecycle)
+                        await manager.preparedOversightCleanupTask?.value
+                    }
+                    let retired = {
+                        bridge.test_activeOverseeWatches == 0 && bridge.delegationScopes.test_activeOverseeContinuationCount == 0
+                            && manager.preparedOversightWindows[targetID] == nil
+                            && manager.retiringPreparedOversightWindows[targetID] == nil
+                    }
+                    do {
+                        try await AsyncTestWait.waitUntil("#1454 attempt cleanup entered", timeout: 5) { entered }
+                        if deletionReturned { _ = try await deletion.value }
+                        var observedRetirement = false
+                        do {
+                            try await AsyncTestWait.waitUntil("authority teardown leaves no live watcher, continuation or owner", timeout: 5, condition: retired)
+                            observedRetirement = true
+                        } catch is CancellationError { throw CancellationError() }
+                        catch { print("#1454 phase=held-observation inconclusive=retirement-not-observed") }
+                        let stops = await controller.shutdownCount
+                        let sameRevision = session.lastTerminalCommitRevision?.ownership == ownership
+                        let pendingTransfer = targetVM.test_claudeCoordinator.hasPendingResumeTransfer(for: session)
+                        print("#1454 phase=held-observation retired=\(observedRetirement) deletionReturned=\(deletionReturned) watches=\(bridge.test_activeOverseeWatches) continuations=\(bridge.delegationScopes.test_activeOverseeContinuationCount) prepared=\(manager.preparedOversightWindows[targetID] != nil) retiring=\(manager.retiringPreparedOversightWindows[targetID] != nil) sameRevision=\(sameRevision) publishing=\(session.terminalCommitInProgress) detached=\(session.claudeController == nil) pendingTransfer=\(pendingTransfer) shutdowns=\(stops)")
+                        XCTAssertTrue(sameRevision)
+                        XCTAssertTrue(original.isClaimed)
+                        XCTAssertFalse(originalFinished)
+                        XCTAssertNil(session.claudeController)
+                        XCTAssertFalse(pendingTransfer)
+                        if observedRetirement {
+                            // Keep the historical oracle at its original observation boundary.
+                            XCTAssertGreaterThan(stops, 0)
+                        }
+                        print("#1454 phase=release")
+                        await drain()
+                        XCTAssertEqual(session.lastTerminalCommitRevision?.ownership, ownership)
+                        XCTAssertTrue(originalFinished)
+                        let finalStops = await controller.shutdownCount
+                        print("#1454 phase=joined originalFinished=\(originalFinished) retired=\(retired()) shutdowns=\(finalStops)")
+                        XCTAssertGreaterThan(finalStops, 0)
+                        XCTAssertTrue(retired())
+                        XCTAssertFalse(decisions.contains { $0.contains("target_idle_with_new_activity") })
+                    } catch {
+                        await drain()
+                        throw error
+                    }
+                    return
                 case "shutdown-active":
                     manager.setTerminatingForTesting(true)
                     let start = ContinuousClock.now
