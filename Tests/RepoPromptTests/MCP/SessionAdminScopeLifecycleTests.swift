@@ -8605,7 +8605,9 @@ final class SessionAdminInventoryReadTests: XCTestCase {
                     guard installed !== original, installed.ownership == ownership, !installed.isClaimed else {
                         return XCTFail("The owned cleanup wrapper must actually be installed before deletion")
                     }
+                    var deletionFinished = false
                     let deletion = Task { @MainActor in
+                        defer { deletionFinished = true }
                         let registry = AgentSessionDeletionRegistry.shared
                         let token = try registry.beginDurableDeletion(sessionID: targetID)
                         do { try FileManager.default.removeItem(at: savedURL) }
@@ -8618,12 +8620,27 @@ final class SessionAdminInventoryReadTests: XCTestCase {
                     }
                     @MainActor func drainAfterFailure() async {
                         release.finish(())
-                        if case let .failure(error) = await deletion.result {
-                            XCTFail("Deletion failed before retirement: \(error)")
-                        }
-                        XCTAssertTrue(targetVM.sessions[targetTab.id] === session)
-                        await targetVM.cancelAgentRun(tabID: targetTab.id, completion: .terminalTeardownCompleted, origin: .internalLifecycle)
-                        await manager.preparedOversightCleanupTask?.value
+                        // A cancelled test still needs an uncancelled, bounded cleanup observer.
+                        await Task { @MainActor in
+                            var drainFinished = false
+                            let drain = Task { @MainActor in
+                                defer { withExtendedLifetime(owner) {}
+                                    drainFinished = true
+                                }
+                                if case let .failure(error) = await deletion.result {
+                                    XCTFail("Deletion failed before retirement: \(error)")
+                                }
+                                XCTAssertTrue(targetVM.sessions[targetTab.id] === session)
+                                await targetVM.cancelAgentRun(tabID: targetTab.id, completion: .terminalTeardownCompleted, origin: .internalLifecycle)
+                                await manager.preparedOversightCleanupTask?.value
+                            }
+                            do {
+                                try await AsyncTestWait.waitUntil("owned failure cleanup settles", timeout: 5) { drainFinished }
+                                await drain.value
+                            } catch {
+                                XCTFail("Owned cleanup remains retained but unjoined after its observation budget: \(error)")
+                            }
+                        }.value
                     }
                     let retired = {
                         bridge.test_activeOverseeWatches == 0 && bridge.delegationScopes.test_activeOverseeContinuationCount == 0
@@ -8643,6 +8660,7 @@ final class SessionAdminInventoryReadTests: XCTestCase {
                         XCTAssertTrue(ownerHeld, "The exact owner must remain retiring while original cleanup is held")
                         XCTAssertTrue(resourcesHeld, "The installed wrapper must hold the claimed original cleanup for this revision")
                         release.finish(())
+                        try await AsyncTestWait.waitUntil("deletion and actual manager retirement settle", timeout: 5) { deletionFinished }
                         try await deletion.value
                         // Observe actual retirement before any failure-only rescue join can run.
                         let finishedOriginal = originalFinished

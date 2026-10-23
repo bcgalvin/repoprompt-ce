@@ -4851,7 +4851,13 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
         await teardownApplyEditsApprovalSessionSync(for: session, cleanupScope: true)
         cancelPendingInstruction(for: session)
         await teardownMCPControl(for: session, cleanupSessionStore: true)
-        if session.runState.isActive {
+        if workspaceManager?.isSessionRuntimeProjection == true {
+            // Private retirement releases supporting infrastructure next. Join existing owned
+            // teardown, but never manufacture an attempt for idle or restored revisionless state.
+            if session.runState.isActive || (session.runState.isTerminalForCommit && session.lastTerminalCommitRevision != nil) {
+                await cancelAgentRun(tabID: session.tabID, completion: .terminalTeardownCompleted, origin: .internalLifecycle)
+            }
+        } else if session.runState.isActive {
             await cancelAgentRun(tabID: session.tabID, origin: .internalLifecycle)
         }
         await cleanupACPStateForDeletedSession(session)
