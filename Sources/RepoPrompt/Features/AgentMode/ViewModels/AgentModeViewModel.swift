@@ -16,6 +16,8 @@ struct AgentContextUsage: Codable, Equatable {
     var modelContextWindow: Int?
     var lastTotalTokens: Int?
     var totalTotalTokens: Int?
+    /// Optional for backward-compatible decoding of older usage snapshots; nil means not pending.
+    var awaitingPostCompactionUsage: Bool? = nil
 }
 
 // MARK: - Agent Mode View Model
@@ -7339,7 +7341,8 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
         codexCoordinator.restoreCodexMetadata(from: agentSession, session: session)
         switch session.selectedAgent {
         case .claudeCode, .claudeCodeGLM, .kimiCode, .customClaudeCompatible:
-            if session.codexContextUsage?.lastTotalTokens == nil {
+            session.contextCompactedAt = session.providerTokenUsageByTurn.last(where: { $0.contextCompacted })?.timestamp
+            if session.codexContextUsage?.lastTotalTokens == nil || session.contextCompactedAt != nil {
                 session.codexContextUsage = Self.contextUsageFromClaudeProviderTokens(
                     session.providerTokenUsageByTurn,
                     modelContextWindow: session.codexContextUsage?.modelContextWindow
@@ -9050,7 +9053,7 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
             return
         }
         throw MCPError.invalidParams(
-            "Sub-agents cannot start additional agent runs. Only top-level MCP-started agent sessions may spawn sub-agents; non-explore sub-agents may start read-only explore children with agent_explore."
+            "Sub-agents cannot start additional agent runs. Only top-level MCP-started agent sessions may spawn sub-agents; sub-agents with an engineer, pair, or design task role may start read-only explore children with agent_explore."
         )
     }
 
@@ -17552,7 +17555,7 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
                 nonToolBoundary: Self.pendingToolFinalizationNonToolBoundary
             )
             if repairedCount > 0 {
-                session.setItemsSilently(workingItemsSnapshot, reason: .pendingToolFinalizationRepair)
+                session.setItemsSilentlyForPendingToolFinalizationRepair(workingItemsSnapshot)
                 session.isDirty = true
                 refreshDerivedTranscriptState(for: session, reason: .saveSession)
                 #if DEBUG
@@ -17664,7 +17667,7 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
             if shouldReconcileWorkingItems {
                 let trimmedWorkingItems = AgentTranscriptIO.workingSourceItems(from: builtPresentation.transcript)
                 if trimmedWorkingItems != session.items {
-                    session.setItemsSilently(trimmedWorkingItems, reason: .retentionCompaction)
+                    session.setItemsSilentlyForRetentionCompaction(trimmedWorkingItems)
                     markDerivedTranscriptSynchronized(
                         for: session,
                         projectionProtection: builtPresentation.projectionProtection
