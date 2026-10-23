@@ -1149,9 +1149,12 @@ package enum MCPDomainCanonicalToolDefinitions {
                 .replacingOccurrences(of: "\n\n**Parallel agents**:", with: "\n\n\(disclosure)\n\n**Parallel agents**:")
             modelID["description"] = .string("[start] Role label from agent_manage.list_agents task_labels (explore, engineer, pair, design — resolved via effective workspace or global role defaults), or an explicit compound model_id from agents[].models[].model_id to pin an exact target. Defaults to pair when omitted. A compound model_id assigns no task role; see the tool description.")
         } else {
-            let selectionDescription = disclosure + " Parented MCP sub-agents cannot use `create_session` or `resume_session`, whatever their role. On `resume_session`, a matching MCP control context keeps its task role even if `model_id` is supplied; otherwise a role label installs that role, and an omitted or compound `model_id` installs none."
+            let selectionDescription = disclosure.replacingOccurrences(
+                of: "a compound `model_id` pins the exact target but assigns no task role to a fresh session",
+                with: "on `create_session`, a compound `model_id` pins the exact target but assigns no task role to a fresh session"
+            ) + " Parented MCP sub-agents cannot use `create_session` or `resume_session`, whatever their role. On `resume_session`, a matching MCP control context keeps its task role even if `model_id` is supplied; otherwise a role label installs that role, and an omitted or compound `model_id` installs none."
             description = description.replacingOccurrences(of: "\n\n**Operations**:", with: "\n\n\(selectionDescription)\n\n**Operations**:")
-            modelID["description"] = .string("[create_session, resume_session] Role label from list_agents task_labels (explore, engineer, pair, design — resolved via effective workspace or global role defaults), or an explicit compound model_id from list_agents agents[].models[].model_id. A compound model_id assigns no task role; see the tool description.")
+            modelID["description"] = .string("[create_session, resume_session] Role label from list_agents task_labels (explore, engineer, pair, design — resolved via effective workspace or global role defaults), or an explicit compound model_id from list_agents agents[].models[].model_id. On create_session, a compound model_id assigns no task role. On resume_session, a matching MCP control context keeps its task role even if model_id is supplied; otherwise an omitted or compound model_id installs none. See the tool description.")
         }
         properties["model_id"] = .object(modelID)
         schema["properties"] = .object(properties)

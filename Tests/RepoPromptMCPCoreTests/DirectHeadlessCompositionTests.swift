@@ -120,8 +120,16 @@ final class DirectHeadlessCompositionTests: XCTestCase {
             let modelDescription = try XCTUnwrap(properties["model_id"]?.objectValue?["description"]?.stringValue)
             let required = selectionClauses + childClauses
                 + (toolName == MCPWindowToolName.agentManage ? resumeClauses : ["effective workspace or global role defaults"])
-            cases.append(("\(toolName) description", definition.description, required))
-            cases.append(("\(toolName).model_id", modelDescription, pointerClauses))
+            let manageSelectionClauses = toolName == MCPWindowToolName.agentManage
+                ? ["on create_session, a compound model_id pins the exact target"] : []
+            let managePointerClauses = toolName == MCPWindowToolName.agentManage
+                ? [
+                    "on create_session, a compound model_id assigns no task role",
+                    "on resume_session, a matching MCP control context keeps its task role even if model_id is supplied",
+                    "otherwise an omitted or compound model_id installs none"
+                ] : []
+            cases.append(("\(toolName) description", definition.description, required + manageSelectionClauses))
+            cases.append(("\(toolName).model_id", modelDescription, pointerClauses + managePointerClauses))
         }
         for entry in cases {
             let text = entry.text.replacingOccurrences(of: "`", with: "").lowercased()
