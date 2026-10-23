@@ -653,3 +653,77 @@ final class ACPApprovalAvailabilityTests: XCTestCase {
         )
     }
 }
+
+@MainActor
+final class CodexApprovalChoiceTests: XCTestCase {
+    private static let plainCommand = #"{"threadId":"thread","turnId":"turn","itemId":"cmd-b","command":"git status","availableDecisions":["accept","cancel"]}"#
+    private static let amendmentCommand = #"{"threadId":"thread","turnId":"turn","itemId":"cmd-a","command":"git status","proposedExecpolicyAmendment":["git","status"],"availableDecisions":["accept",{"acceptWithExecpolicyAmendment":{"execpolicy_amendment":["git","status"]}},"cancel"]}"#
+
+    func testAdvertisedDecisionsBoundMCPOptions() async throws {
+        let context = try await makeContext()
+        for (json, expected) in [
+            (Self.plainCommand, ["accept", "cancel"]),
+            (Self.amendmentCommand, ["accept", "accept_with_amendment", "cancel"])
+        ] {
+            try install(parsedRequest(json), in: context)
+            let interaction = try XCTUnwrap(context.window.agentModeViewModel.mcpPendingInteraction(for: context.session))
+            XCTAssertEqual(interaction.options.map(\.label), expected, "MCP options must equal availableDecisions: \(json)")
+        }
+    }
+
+    func testUnadvertisedMCPResponsesAreRejected() async throws {
+        let context = try await makeContext()
+        let viewModel = context.window.agentModeViewModel
+        for (json, rejected, accepted) in [
+            (Self.plainCommand, [("accept_for_session", nil), ("accept_with_amendment", #"["git","status"]"#)], [("accept", nil), ("cancel", nil)]),
+            (Self.amendmentCommand, [("accept_with_amendment", #"["git"]"#), ("accept_with_amendment", "not-json")], [("accept", nil), ("cancel", nil), ("accept_with_amendment", #"["git","status"]"#)])
+        ] as [(String, [(String, String?)], [(String, String?)])] {
+            let request = try parsedRequest(json)
+            install(request, in: context)
+            for (response, amendment) in accepted {
+                XCTAssertNoThrow(try viewModel.mcpPendingInteractionResolution(
+                    for: context.session, kind: .approval, interactionID: request.id, payload: payload(response, amendment)
+                ), "Advertised \(response) \(amendment ?? "") must still resolve: \(json)")
+            }
+            for (response, amendment) in rejected {
+                XCTAssertThrowsError(try viewModel.mcpPendingInteractionResolution(
+                    for: context.session, kind: .approval, interactionID: request.id, payload: payload(response, amendment)
+                ), "Unadvertised \(response) \(amendment ?? "") must be rejected: \(json)") { error in
+                    guard let mcpError = error as? MCPError, case .invalidParams = mcpError else {
+                        return XCTFail("Expected MCPError.invalidParams for \(response), got \(error)")
+                    }
+                }
+            }
+        }
+    }
+
+    private func makeContext() async throws -> AgentRunMCPControlledSessionContext {
+        let context = try await AgentRunMCPControlledSessionContext.make(
+            workspaceNamePrefix: "Codex approval choices", workspaceSwitchReason: "codexApprovalChoiceTests",
+            clientName: "codex-approval-choice-tests", unusedStartRunMessage: "No provider starts"
+        )
+        addTeardownBlock { @MainActor in await context.cleanup() }
+        return context
+    }
+
+    private func parsedRequest(_ json: String) throws -> AgentApprovalRequest {
+        let params = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any], "Fixture must be a JSON object"
+        )
+        return try XCTUnwrap(CodexNativeSessionController.parseApprovalRequest(
+            requestID: .int(1), method: "item/commandExecution/requestApproval", params: params,
+            activeThreadID: "thread", currentTurnID: "turn"
+        ), "Codex fixture must parse: \(json)")
+    }
+
+    private func install(_ request: AgentApprovalRequest, in context: AgentRunMCPControlledSessionContext) {
+        context.session.pendingApproval = request
+        context.session.runState = .waitingForApproval
+    }
+
+    private func payload(_ response: String, _ amendment: String?) -> AgentModeViewModel.MCPInteractionResponsePayload {
+        AgentModeViewModel.MCPInteractionResponsePayload(
+            text: nil, skip: false, responseArgument: .scalar(response), amendment: amendment, answersByQuestionID: [:]
+        )
+    }
+}
