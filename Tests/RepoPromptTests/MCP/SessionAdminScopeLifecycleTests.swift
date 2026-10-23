@@ -8627,16 +8627,17 @@ final class SessionAdminInventoryReadTests: XCTestCase {
                                 defer { withExtendedLifetime(owner) {}
                                     drainFinished = true
                                 }
-                                if case let .failure(error) = await deletion.result {
-                                    XCTFail("Deletion failed before retirement: \(error)")
-                                }
-                                XCTAssertTrue(targetVM.sessions[targetTab.id] === session)
+                                _ = await deletion.result
                                 await targetVM.cancelAgentRun(tabID: targetTab.id, completion: .terminalTeardownCompleted, origin: .internalLifecycle)
                                 await manager.preparedOversightCleanupTask?.value
                             }
                             do {
                                 try await AsyncTestWait.waitUntil("owned failure cleanup settles", timeout: 5) { drainFinished }
                                 await drain.value
+                                if case let .failure(error) = await deletion.result {
+                                    XCTFail("Deletion failed before retirement: \(error)")
+                                }
+                                XCTAssertTrue(targetVM.sessions[targetTab.id] === session)
                             } catch {
                                 XCTFail("Owned cleanup remains retained but unjoined after its observation budget: \(error)")
                             }
