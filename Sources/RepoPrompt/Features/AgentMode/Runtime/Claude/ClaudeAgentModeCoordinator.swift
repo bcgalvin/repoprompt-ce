@@ -815,6 +815,11 @@ final class ClaudeAgentModeCoordinator {
                 throw error
             }
 
+            if case let .runAttempt(owner, runID) = intent,
+               session.isCurrentRunAttemptForCurrentBinding(owner, expectedRunID: runID)
+            {
+                session.recordRunProgress(ownership: owner, kind: .stageTransition, stage: .retrying, retryIntent: .applicationManaged)
+            }
             await hostCapabilities.stageClaudeResumeRecoveryHandoff(session)
             guard intentIsCurrent(intent, for: session),
                   let detached = detachClaudeController(
@@ -1649,6 +1654,7 @@ final class ClaudeAgentModeCoordinator {
                 // A lane-update dispatch has no base user instruction. If its required batch was
                 // revoked, acknowledged, revision-fenced, or omitted by the shared budget, stop before
                 // `sendUserMessage`; `.superseded` is the quiet no-provider-call outcome.
+                defer { withExtendedLifetime(monitoring.quietMarkerProducerLifetime) {} }
                 guard !monitoring.mustAbortDispatch else {
                     hostCapabilities.recordAgentSessionLinkPhysicalDispatchNotAttempted(session, promptDispatchID)
                     return .superseded
@@ -1796,6 +1802,9 @@ final class ClaudeAgentModeCoordinator {
             removeToolTracking: true
         ) else {
             return false
+        }
+        if let owner = session.activeRunOwnership, session.isCurrentRunAttemptForCurrentBinding(owner) {
+            session.recordRunProgress(ownership: owner, kind: .stageTransition, stage: .retrying, retryIntent: .applicationManaged)
         }
         _ = await retireClaudeController(
             detached,
