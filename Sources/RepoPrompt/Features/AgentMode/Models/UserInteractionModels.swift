@@ -1138,7 +1138,8 @@ struct AgentApprovalRequest: Identifiable, Hashable {
             guard let availableDecisions else { return true }
             return availableDecisions.contains { advertised in
                 guard case let .acceptWithExecpolicyAmendment(value) = advertised else { return false }
-                return AgentApprovalDecision.parseExecpolicyAmendment(value) == amendment
+                guard let advertised = AgentApprovalDecision.parseExecpolicyAmendment(value) else { return false }
+                return advertised.elementsEqual(amendment) { $0.utf8.elementsEqual($1.utf8) }
             }
         }
         return availableDecisions?.contains(decision) ?? true
@@ -1155,6 +1156,15 @@ struct AgentApprovalRequest: Identifiable, Hashable {
             if allows(decision) { return decision }
         }
         return allows(.acceptForSession) ? .acceptForSession : nil
+    }
+
+    /// The amendment shown alongside Remember, without letting legacy metadata override a list.
+    var presentedExecpolicyAmendmentJSON: String? {
+        if case .codex = requestID, availableDecisions != nil {
+            guard case let .acceptWithExecpolicyAmendment(json)? = rememberedDecision else { return nil }
+            return json
+        }
+        return proposedExecpolicyAmendmentJSON
     }
 
     var supportsExecpolicyAmendment: Bool {

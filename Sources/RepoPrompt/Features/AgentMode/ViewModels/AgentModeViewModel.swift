@@ -8950,7 +8950,7 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
             if let grantRoot = approval.grantRoot, !grantRoot.isEmpty {
                 details.append(.init(label: "Requested Scope", value: grantRoot, isCode: false))
             }
-            if let amendment = approval.proposedExecpolicyAmendmentJSON, !amendment.isEmpty {
+            if let amendment = approval.presentedExecpolicyAmendmentJSON, !amendment.isEmpty {
                 details.append(.init(label: "Suggested Amendment", value: amendment, isCode: true))
             }
             for detail in approval.details {

@@ -5457,6 +5457,25 @@ final class CodexNativeSessionController {
             turnID: stableTurnID,
             itemID: itemID
         )
+        func makeRequest(details: [AgentApprovalDetail]) -> AgentApprovalRequest {
+            AgentApprovalRequest(
+                id: approvalID,
+                requestID: .codex(requestID),
+                method: method,
+                kind: kind,
+                threadID: threadID,
+                turnID: turnID,
+                itemID: itemID,
+                reason: reason,
+                command: command,
+                cwd: cwd,
+                grantRoot: grantRoot,
+                proposedExecpolicyAmendmentJSON: proposedExecpolicyAmendmentJSON,
+                availableDecisions: availableDecisions,
+                details: details
+            )
+        }
+        let presentedAmendment = makeRequest(details: []).presentedExecpolicyAmendmentJSON
         let detailSeed = approvalID.uuidString
         var details: [AgentApprovalDetail] = []
         var detailIndex = 0
@@ -5492,29 +5511,14 @@ final class CodexNativeSessionController {
         if let commandActionsJSON, !commandActionsJSON.isEmpty {
             appendDetail(label: "Command Actions", value: commandActionsJSON, isCode: true)
         }
-        if let proposedExecpolicyAmendmentJSON, !proposedExecpolicyAmendmentJSON.isEmpty {
-            appendDetail(label: "Execpolicy Amendment", value: proposedExecpolicyAmendmentJSON, isCode: true)
+        if let presentedAmendment, !presentedAmendment.isEmpty {
+            appendDetail(label: "Execpolicy Amendment", value: presentedAmendment, isCode: true)
         }
         if details.isEmpty {
             appendDetail(label: "Method", value: method, isCode: true)
         }
 
-        return AgentApprovalRequest(
-            id: approvalID,
-            requestID: .codex(requestID),
-            method: method,
-            kind: kind,
-            threadID: threadID,
-            turnID: turnID,
-            itemID: itemID,
-            reason: reason,
-            command: command,
-            cwd: cwd,
-            grantRoot: grantRoot,
-            proposedExecpolicyAmendmentJSON: proposedExecpolicyAmendmentJSON,
-            availableDecisions: availableDecisions,
-            details: details
-        )
+        return makeRequest(details: details)
     }
 
     private static func firstString(in value: Any, keys: [String]) -> String? {

@@ -1021,7 +1021,65 @@ final class CodexApprovalChoiceTests: XCTestCase {
         }
     }
 
-    func testAmendmentsMatchDecodedAdvertisementAndNeverWidenOnMalformedInput() throws {
+    func testAdvertisedAmendmentsRequireExactDecodedTokens() async throws {
+        let context = try await makeContext()
+        let viewModel = context.window.agentModeViewModel
+        let session = context.session
+        session.selectedAgent = .codexExec
+        let composed = #"["printf","%s","caf\u00e9"]"#
+        let decomposed = #"["printf","%s","cafe\u0301"]"#
+        let examples: [(advertised: String, denied: String, equivalent: String, expected: [String])] = [
+            (composed, decomposed, " [ \"printf\", \"%s\", \"caf\u{E9}\" ] ", ["printf", "%s", "caf\u{E9}"]),
+            (decomposed, composed, " [ \"printf\", \"%s\", \"cafe\u{301}\" ] ", ["printf", "%s", "cafe\u{301}"])
+        ]
+        let sent = expectation(description: "Only exact decoded amendments reach the controller")
+        sent.expectedFulfillmentCount = examples.count
+        let controller = ApprovalRecordingController(sent: sent)
+        session.codexController = controller
+        let requests = try examples.enumerated().map { index, example in
+            try parsedRequest(#"{"threadId":"thread","itemId":"unicode-\#(index)","command":"printf","availableDecisions":[{"acceptWithExecpolicyAmendment":{"execpolicy_amendment":\#(example.advertised)}}]}"#)
+        }
+        for (request, example) in zip(requests, examples) {
+            install(request, in: context)
+            let denied = AgentApprovalDecision.acceptWithExecpolicyAmendment(example.denied)
+            XCTAssertFalse(request.allows(denied))
+            XCTAssertThrowsError(try viewModel.mcpPendingInteractionResolution(
+                for: session, kind: .approval, interactionID: request.id, payload: payload("accept_with_amendment", example.denied)
+            ))
+            XCTAssertThrowsError(try viewModel.applyPendingInteractionResolution(.approval(request: request, decision: denied), to: session))
+            XCTAssertEqual(session.pendingApproval?.id, request.id)
+            XCTAssertEqual(session.runState, .waitingForApproval)
+        }
+        XCTAssertTrue(controller.recorder.events.isEmpty)
+
+        func amendmentBytes(_ result: [String: Any]) throws -> [[UInt8]] {
+            let object = try XCTUnwrap(result["decision"] as? [String: [String: [String]]])
+            let tokens = try XCTUnwrap(object["acceptWithExecpolicyAmendment"]?["execpolicy_amendment"])
+            return tokens.map { Array($0.utf8) }
+        }
+        for (request, example) in zip(requests, examples) {
+            install(request, in: context)
+            let decision = AgentApprovalDecision.acceptWithExecpolicyAmendment(example.equivalent)
+            XCTAssertTrue(request.allows(decision), "JSON escapes and whitespace must not change token identity")
+            let resolution = try viewModel.mcpPendingInteractionResolution(
+                for: session, kind: .approval, interactionID: request.id, payload: payload("accept_with_amendment", example.equivalent)
+            )
+            try viewModel.applyPendingInteractionResolution(resolution, to: session)
+            XCTAssertNil(session.pendingApproval)
+        }
+        await fulfillment(of: [sent], timeout: 3)
+        let received = try controller.recorder.events.map { event in
+            XCTAssertTrue(event.hasPrefix("1:"))
+            let object = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(event.dropFirst(2).utf8)) as? [String: Any])
+            return try amendmentBytes(object)
+        }
+        XCTAssertEqual(received.count, examples.count)
+        for example in examples {
+            XCTAssertTrue(received.contains(example.expected.map { Array($0.utf8) }), "Wire comparison must not use String canonical equality")
+        }
+    }
+
+    func testAmendmentsMatchDecodedAdvertisementAndNeverWidenOnMalformedInput() async throws {
         let params: [String: Any] = [
             "threadId": "thread", "command": "git status", "proposedExecpolicyAmendment": ["wrong"],
             "availableDecisions": [["acceptWithExecpolicyAmendment": ["execpolicy_amendment": ["git", "status"]]]]
@@ -1046,6 +1104,34 @@ final class CodexApprovalChoiceTests: XCTestCase {
         let wire = try XCTUnwrap(CodexAgentModeCoordinator.buildApprovalResult(decision: remembered, request: request))
         let object = try XCTUnwrap(wire["decision"] as? [String: [String: [String]]])
         XCTAssertEqual(object, ["acceptWithExecpolicyAmendment": ["execpolicy_amendment": ["git", "status"]]])
+
+        let context = try await makeContext()
+        let presentations: [(String, AgentApprovalRequest, [String]?)] = try [
+            ("inconsistent proposal", request, ["git", "status"]),
+            ("advertised only", advertisedOnly, ["git", "status"]),
+            ("present without amendment", parsedRequest(#"{"threadId":"thread","command":"git status","proposedExecpolicyAmendment":["wrong"],"availableDecisions":["accept","cancel"]}"#), nil),
+            ("absent legacy", parsedRequest(#"{"threadId":"thread","command":"git status","proposedExecpolicyAmendment":["wrong"]}"#), ["wrong"]),
+            ("null legacy", parsedRequest(#"{"threadId":"thread","command":"git status","proposedExecpolicyAmendment":["wrong"],"availableDecisions":null}"#), ["wrong"])
+        ]
+        for (label, target, expected) in presentations {
+            install(target, in: context)
+            let cardDetails = target.details.filter { $0.label == "Execpolicy Amendment" }
+            let interaction = try XCTUnwrap(context.window.agentModeViewModel.mcpPendingInteraction(for: context.session))
+            let mcpDetails = interaction.details.filter { ["Suggested Amendment", "Execpolicy Amendment"].contains($0.label) }
+            XCTAssertEqual(cardDetails.count, expected == nil ? 0 : 1, label)
+            XCTAssertEqual(mcpDetails.count, expected == nil ? 0 : 2, label)
+            for value in cardDetails.map(\.value) + mcpDetails.map(\.value) {
+                let tokens = try XCTUnwrap(AgentApprovalDecision.parseExecpolicyAmendment(value))
+                XCTAssertEqual(tokens.map { Array($0.utf8) }, expected?.map { Array($0.utf8) } ?? [], label)
+            }
+            if let expected {
+                let decision = try XCTUnwrap(target.rememberedDecision)
+                let result = try XCTUnwrap(CodexAgentModeCoordinator.buildApprovalResult(decision: decision, request: target))
+                let object = try XCTUnwrap(result["decision"] as? [String: [String: [String]]])
+                let tokens = try XCTUnwrap(object["acceptWithExecpolicyAmendment"]?["execpolicy_amendment"])
+                XCTAssertEqual(tokens.map { Array($0.utf8) }, expected.map { Array($0.utf8) }, label)
+            }
+        }
 
         let legacy = try parsedRequest(#"{"threadId":"thread","command":"git status"}"#)
         let fileChange = AgentApprovalRequest(
