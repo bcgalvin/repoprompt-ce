@@ -1458,6 +1458,18 @@ package enum MCPDomainCanonicalToolDefinitions {
                 isEnabledByDefault: definition.isEnabledByDefault
             )
         }
+        if definition.name == MCPGlobalToolName.manageWorkspaces {
+            return MCPDomainToolDefinition(
+                name: definition.name,
+                description: definition.description.replacingOccurrences(
+                    of: "'hide'/'unhide' are non-destructive.",
+                    with: "'hide'/'unhide' are non-destructive and ignore include_hidden. Name-based 'hide' uses the unique visible match and falls back to a unique hidden match only when no visible workspace matches, so an ambiguous visible name stays ambiguous. Name-based 'unhide' needs a unique match among visible and hidden workspaces. Use a workspace UUID to disambiguate."
+                ),
+                inputSchema: definition.inputSchema,
+                annotations: definition.annotations,
+                isEnabledByDefault: definition.isEnabledByDefault
+            )
+        }
         if definition.name == MCPWindowToolName.agentSessionLink {
             return canonicalizeAgentSessionLink(definition)
         }
