@@ -983,7 +983,7 @@ final class CodexResumeWedgeCommitTests: XCTestCase {
         let controller = try XCTUnwrap(controllers.first)
         session.runState = .idle
         func context(_ local: Bool, origin: AgentTabSession.CodexFallbackOrigin = .manual) -> AgentTabSession.CodexFallbackSubmissionContext {
-            .init(queueID: UUID(), providerText: "continue locally", images: [], taggedFileAttachments: [], draftText: "continue locally", optimisticUserItemID: nil, origin: origin, dispatchTicket: nil, isLocalUserInput: local)
+            .init(queueID: UUID(), providerText: "continue locally", attachments: [], taggedFileAttachments: [], draftText: "continue locally", optimisticUserItemID: nil, origin: origin, dispatchTicket: nil, isLocalUserInput: local)
         }
         let first = await coordinator.sendCodexNativeMessage(session: session, text: "perform the operation", attachments: [], fallbackContext: context(true))
         XCTAssertTrue(first.didSend)
@@ -1482,7 +1482,7 @@ final class CodexResumeWedgeCommitTests: XCTestCase {
         _ = AgentModeProcessRunIdentity.startFreshProcessRun(for: fixture.session)
         fixture.session.appendItem(.user("recover auth", sequenceIndex: fixture.session.nextSequenceIndex))
         fixture.session.codexPendingAuthRetryTurn = .init(
-            text: "recover auth", images: [], model: nil, reasoningEffort: nil, serviceTier: nil,
+            text: "recover auth", attachments: [], model: nil, reasoningEffort: nil, serviceTier: nil,
             attachmentReservationID: nil, expectedTurnID: nil, auditTurnID: nil
         )
         await fixture.coordinator.test_handleCodexNativeEvent(.error("account/chatgptAuthTokens/refresh"), session: fixture.session)
@@ -2417,7 +2417,7 @@ final class WedgeFakeCodexController: CodexSessionControllerPassiveStubDefaults,
 
     func startUserTurn(
         text: String,
-        images _: [AgentImageAttachment],
+        attachments _: [AgentFileAttachment],
         model _: String?,
         reasoningEffort _: String?,
         serviceTier _: String?
@@ -2434,7 +2434,7 @@ final class WedgeFakeCodexController: CodexSessionControllerPassiveStubDefaults,
         lock.withLock { compactions += 1 }
     }
 
-    func steerUserTurn(text: String, images _: [AgentImageAttachment], expectedTurnID: String) async throws -> CodexTurnSteerReceipt {
+    func steerUserTurn(text: String, attachments _: [AgentFileAttachment], expectedTurnID: String) async throws -> CodexTurnSteerReceipt {
         lock.withLock { steers.append(text) }
         return CodexTurnSteerReceipt(acceptedTurnID: expectedTurnID)
     }

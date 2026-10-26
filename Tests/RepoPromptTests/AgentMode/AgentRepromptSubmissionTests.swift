@@ -335,7 +335,7 @@ final class AgentRepromptSubmissionTests: XCTestCase {
                 fixture.session.recordRestorationAuthoritative(.persistedPayloadApplied)
                 fixture.viewModel.repromptEnabled = enabled
                 fixture.viewModel.repromptService = .init(transport: { _, _, _ in XCTFail("Bypassed submission must not rewrite") })
-                if text.isEmpty { fixture.session.pendingImageAttachments = [.init(source: .localFile(path: "/tmp/parity.png"))] }
+                if text.isEmpty { fixture.session.pendingFileAttachments = [.init(source: .localFile(path: "/tmp/parity.png"))] }
                 let claim = try fixture.claim(text: text, local: true)
                 let result = await fixture.viewModel.executeComposerSubmitAttempt(text: text, claim: claim, createAndActivateSessionTab: { XCTFail("Existing session must not be replaced")
                     return nil
@@ -437,15 +437,15 @@ final class AgentRepromptSubmissionTests: XCTestCase {
             try await publish("brief.")
         })
         defer { Task { await gate.release() } }
-        fixture.session.pendingImageAttachments = [.init(source: .localFile(path: "/tmp/kept-image.png"))]
-        let images = fixture.session.pendingImageAttachments
+        fixture.session.pendingFileAttachments = [.init(source: .localFile(path: "/tmp/kept-image.png"))]
+        let images = fixture.session.pendingFileAttachments
         let token = fixture.session.composerSubmissionToken
         XCTAssertTrue(try fixture.begin(text: "Original"))
         try await AsyncTestWait.waitUntil("incremental draft", timeout: 5) { fixture.session.draftText == "A streamed " }
         XCTAssertEqual(fixture.session.composerSubmissionToken, token)
         XCTAssertNil(fixture.session.activeComposerSubmitAttempt)
         XCTAssertTrue(fixture.session.items.isEmpty)
-        XCTAssertEqual(fixture.session.pendingImageAttachments, images)
+        XCTAssertEqual(fixture.session.pendingFileAttachments, images)
         let requests = await fixture.backend.requests
         XCTAssertTrue(requests.isEmpty, "Never route partial tokens")
         await gate.release()

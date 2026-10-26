@@ -497,7 +497,7 @@ private final class TextFieldEventWindow: NSWindow {
 @MainActor
 private final class ResizableTextFieldHostingFixture {
     let publishedTexts = ValueBox<[String]>([])
-    let textView: ImageAwareTextView
+    let textView: AttachmentAwareTextView
     let coordinator: CustomTextField.Coordinator
     let scrollView: NSScrollView
     let window: TextFieldEventWindow
@@ -565,7 +565,7 @@ private final class ResizableTextFieldHostingFixture {
 
         Self.flushHostedUpdates(hostingView)
         let scrollView = try XCTUnwrap(Self.hostedScrollViews(in: hostingView).only)
-        let textView = try XCTUnwrap(scrollView.documentView as? ImageAwareTextView)
+        let textView = try XCTUnwrap(scrollView.documentView as? AttachmentAwareTextView)
         let coordinator = try XCTUnwrap(textView.delegate as? CustomTextField.Coordinator)
         self.scrollView = scrollView
         self.textView = textView
@@ -604,7 +604,7 @@ private final class ResizableTextFieldHostingFixture {
         Self.flushHostedUpdates(hostingView)
 
         let updatedScrollView = try XCTUnwrap(Self.hostedScrollViews(in: hostingView).only)
-        let updatedTextView = try XCTUnwrap(updatedScrollView.documentView as? ImageAwareTextView)
+        let updatedTextView = try XCTUnwrap(updatedScrollView.documentView as? AttachmentAwareTextView)
         XCTAssertTrue(updatedScrollView === scrollView)
         XCTAssertTrue(updatedTextView === textView)
         XCTAssertTrue(updatedTextView.delegate === coordinator)
@@ -698,7 +698,7 @@ private final class ResizableTextFieldHostingFixture {
             ),
             placeholder: "",
             onReturn: onReturn,
-            onImagePaste: nil,
+            onAttachmentPaste: nil,
             features: .plain,
             externalUpdateTick: externalUpdateTick.value,
             externalEditTransaction: externalEditTransaction,
@@ -723,7 +723,7 @@ private final class ResizableTextFieldHostingFixture {
     private static func hostedScrollViews(in rootView: NSView) -> [NSScrollView] {
         var matches: [NSScrollView] = []
         if let scrollView = rootView as? NSScrollView,
-           scrollView.documentView is ImageAwareTextView
+           scrollView.documentView is AttachmentAwareTextView
         {
             matches.append(scrollView)
         }

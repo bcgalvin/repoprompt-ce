@@ -1349,7 +1349,7 @@ private final class ComposerRoutingCodexController: CodexSessionControllerPassiv
 
     func startUserTurn(
         text _: String,
-        images _: [AgentImageAttachment],
+        attachments _: [AgentFileAttachment],
         model: String?,
         reasoningEffort _: String?,
         serviceTier _: String?
