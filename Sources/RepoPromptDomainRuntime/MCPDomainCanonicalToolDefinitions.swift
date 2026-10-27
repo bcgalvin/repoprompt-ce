@@ -1741,7 +1741,7 @@ package enum MCPDomainCanonicalToolDefinitions {
         let description = definition.description
             .replacingOccurrences(of: "Manage workspaces and compose-tab lifecycle across RepoPrompt windows.", with: "Manage workspaces and compose-tab lifecycle. App-backed calls operate through RepoPrompt windows; direct headless calls operate on canonical workspace contexts without windows.")
             .replacingOccurrences(of: "canonical API for per-window tab routing and context_id discovery", with: "canonical API for context binding and context_id discovery")
-            .replacingOccurrences(of: "(id, name, repoPaths, showing window IDs, is_hidden)", with: "(app-backed: id, name, repoPaths, showing window IDs, is_hidden; headless: workspace_id, name, repo_paths, hidden, contexts, without window IDs)")
+            .replacingOccurrences(of: "(id, name, repoPaths, showing window IDs, is_hidden)", with: "(app-backed: id, name, repo_paths, showing window IDs, is_hidden; headless: workspace_id, name, repo_paths, hidden, contexts, without window IDs)")
             .replacingOccurrences(of: "Switch a window to a specified workspace", with: "App-backed: switch the target window to a workspace. Headless: bind its active context, or first stored context when none is active")
             .replacingOccurrences(of: "List compose tabs in one window", with: "List app-backed tabs in one window or headless workspace/context inventory")
             .replacingOccurrences(of: "Bind this connection to a compose tab (Legacy compatibility", with: "Bind this connection to a compose tab: UUID or name on the app backend; canonical UUID only on headless (Legacy compatibility")
