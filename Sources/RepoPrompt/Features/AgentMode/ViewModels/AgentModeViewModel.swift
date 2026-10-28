@@ -8691,8 +8691,8 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
         )
     }
 
-    private func mcpApprovalDecisionOptions(for approval: AgentApprovalRequest) -> [AgentRunMCPSnapshot.Interaction.Option] {
-        mcpApprovalDecisionLabels(for: approval, includeAliases: false).map { label in
+    private func mcpApprovalDecisionOptions(for approval: AgentApprovalRequest, session: TabSession) -> [AgentRunMCPSnapshot.Interaction.Option] {
+        mcpApprovalDecisionLabels(for: approval, session: session, includeAliases: false).map { label in
             let description: String? = switch label {
             case "accept":
                 "Allow this action"
@@ -8712,19 +8712,26 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
         }
     }
 
-    private func mcpApprovalDecisionLabels(for approval: AgentApprovalRequest, includeAliases: Bool = true) -> [String] {
-        var labels = approval.supportsPlainApprove ? ["accept"] : []
-        if approval.supportsAlwaysAllow {
+    private func mcpApprovalDecisionLabels(for approval: AgentApprovalRequest, session: TabSession, includeAliases: Bool = true) -> [String] {
+        func allows(_ decision: AgentApprovalDecision) -> Bool {
+            CodexAgentModeCoordinator.allowsApprovalDecision(decision, request: approval, session: session)
+        }
+        var labels = allows(.accept) ? ["accept"] : []
+        if allows(.acceptForSession) {
             labels.append("accept_for_session")
         }
-        if approval.kind == .commandExecution, approval.sessionApprovalScope == nil {
+        // Legacy requests permit caller-supplied amendments; present lists require an advertised payload.
+        let allowsRememberedDecision: Bool = if case .codex = approval.requestID {
+            CodexAgentModeCoordinator.computerUseAllowsDecision(.acceptForSession, session: session)
+        } else { true }
+        if approval.supportsExecpolicyAmendment, allowsRememberedDecision {
             labels.append("accept_with_amendment")
         }
-        labels.append("decline")
-        if includeAliases {
-            labels.append("reject")
+        if allows(.decline) {
+            labels.append("decline")
+            if includeAliases { labels.append("reject") }
         }
-        labels.append("cancel")
+        if allows(.cancel) { labels.append("cancel") }
         return labels
     }
 
@@ -8950,7 +8957,7 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
             if let grantRoot = approval.grantRoot, !grantRoot.isEmpty {
                 details.append(.init(label: "Requested Scope", value: grantRoot, isCode: false))
             }
-            if let amendment = approval.proposedExecpolicyAmendmentJSON, !amendment.isEmpty {
+            if let amendment = approval.presentedExecpolicyAmendmentJSON, !amendment.isEmpty {
                 details.append(.init(label: "Suggested Amendment", value: amendment, isCode: true))
             }
             for detail in approval.details {
@@ -8964,7 +8971,7 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
                 prompt: approval.reason,
                 context: nil,
                 allowsMultiple: nil,
-                options: mcpApprovalDecisionOptions(for: approval),
+                options: mcpApprovalDecisionOptions(for: approval, session: session),
                 fields: [],
                 details: details
             )
@@ -13484,28 +13491,15 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
             let decision: AgentApprovalDecision
             switch rawDecision {
             case "accept", "approve":
-                guard approval.supportsPlainApprove else {
-                    throw MCPError.invalidParams(
-                        "Plain approval is unavailable because this ACP request offers no selectable one-time allow option. Choose an explicit decision. No response was applied."
-                    )
-                }
                 decision = .accept
             case "accept_for_session", "always_allow", "approve_for_session":
-                guard approval.supportsAlwaysAllow else {
-                    throw MCPError.invalidParams(
-                        "response must be one of: \(mcpApprovalDecisionLabels(for: approval, includeAliases: false).joined(separator: ", ")). No response was applied."
-                    )
-                }
                 decision = .acceptForSession
             case "accept_with_amendment", "amend":
-                guard approval.kind == .commandExecution, approval.sessionApprovalScope == nil else {
-                    throw MCPError.invalidParams(
-                        "response must be one of: \(mcpApprovalDecisionLabels(for: approval, includeAliases: false).joined(separator: ", ")). No response was applied."
-                    )
-                }
                 let amendment = payload.amendment?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
                 guard !amendment.isEmpty else {
-                    throw MCPError.invalidParams("amendment is required for accept_with_amendment.")
+                    throw MCPError.invalidParams(
+                        "amendment is required for accept_with_amendment. response must be one of: \(mcpApprovalDecisionLabels(for: approval, session: session, includeAliases: false).joined(separator: ", ")). No response was applied."
+                    )
                 }
                 decision = .acceptWithExecpolicyAmendment(amendment)
             case "decline", "reject":
@@ -13514,7 +13508,12 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
                 decision = .cancel
             default:
                 throw MCPError.invalidParams(
-                    "response must be one of: \(mcpApprovalDecisionLabels(for: approval, includeAliases: false).joined(separator: ", "))."
+                    "response must be one of: \(mcpApprovalDecisionLabels(for: approval, session: session, includeAliases: false).joined(separator: ", "))."
+                )
+            }
+            guard CodexAgentModeCoordinator.allowsApprovalDecision(decision, request: approval, session: session) else {
+                throw MCPError.invalidParams(
+                    "response must be one of: \(mcpApprovalDecisionLabels(for: approval, session: session, includeAliases: false).joined(separator: ", ")). No response was applied."
                 )
             }
             return .approval(request: approval, decision: decision)
@@ -13549,8 +13548,13 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
             submitWorktreeMergeReviewDecision(tabID: session.tabID, reviewID: reviewID, decision: decision)
         case let .permissions(request, decision):
             codexCoordinator.submitPermissionsDecision(session: session, request: request, decision: decision)
-        case let .approval(_, decision):
-            submitApprovalDecision(tabID: session.tabID, decision: decision)
+        case let .approval(request, decision):
+            guard submitApprovalDecision(tabID: session.tabID, requestID: request.id, decision: decision) else {
+                let current = session.pendingApproval ?? request
+                throw MCPError.invalidParams(
+                    "The approval is unavailable, unsupported, or no longer matches interaction_id. response must be one of: \(mcpApprovalDecisionLabels(for: current, session: session, includeAliases: false).joined(separator: ", ")). No response was applied."
+                )
+            }
         }
     }
 

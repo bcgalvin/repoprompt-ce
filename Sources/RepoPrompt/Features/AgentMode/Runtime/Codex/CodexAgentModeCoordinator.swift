@@ -12070,7 +12070,7 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
         return json
     }
 
-    private static func computerUseAllowsDecision(_ decision: AgentApprovalDecision, session: AgentTabSession) -> Bool {
+    static func computerUseAllowsDecision(_ decision: AgentApprovalDecision, session: AgentTabSession) -> Bool {
         guard session.codexControllerFeatureState?.computerUseEnabled == true else { return true }
         switch decision {
         case .acceptForSession, .acceptWithExecpolicyAmendment: return false
@@ -12078,29 +12078,28 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
         }
     }
 
+    static func allowsApprovalDecision(_ decision: AgentApprovalDecision, request: AgentApprovalRequest, session: AgentTabSession) -> Bool {
+        guard request.allows(decision) else { return false }
+        guard case .codex = request.requestID else { return true }
+        return computerUseAllowsDecision(decision, session: session)
+    }
+
     func submitApprovalDecision(
         session: AgentTabSession,
         decision: AgentApprovalDecision
     ) {
         guard let request = session.pendingApproval,
-              let controller = session.codexController
+              case let .codex(requestID) = request.requestID,
+              let controller = session.codexController,
+              Self.allowsApprovalDecision(decision, request: request, session: session),
+              let result = Self.buildApprovalResult(decision: decision, request: request)
         else {
             return
         }
-        if case .acceptWithExecpolicyAmendment = decision,
-           request.kind != .commandExecution
-        {
-            return
-        }
-        guard Self.computerUseAllowsDecision(decision, session: session) else { return }
-        let result = buildApprovalResult(decision: decision, request: request)
         session.pendingApproval = nil
         viewModel?.reconcileInteractiveRunState(session)
         handleRunInteractionStateChange(for: session, reason: .approvalResponseSubmitted)
         viewModel?.requestUIRefresh(tabID: session.tabID, urgent: true)
-        guard case let .codex(requestID) = request.requestID else {
-            return
-        }
         Task { [controller] in
             await controller.respondToServerRequest(id: requestID, result: result)
         }
@@ -12224,7 +12223,8 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
         ]
     }
 
-    private func buildApprovalResult(decision: AgentApprovalDecision, request: AgentApprovalRequest) -> [String: Any] {
+    static func buildApprovalResult(decision: AgentApprovalDecision, request: AgentApprovalRequest) -> [String: Any]? {
+        guard request.allows(decision) else { return nil }
         // The server request id already scopes routing. Keep payload to `{ decision }`.
         let decisionValue: String
         switch decision {
@@ -12237,22 +12237,14 @@ final class CodexAgentModeCoordinator: AgentModeRunInteractionStateObserving {
         case .acceptForSession:
             decisionValue = "acceptForSession"
         case let .acceptWithExecpolicyAmendment(amendment):
-            guard request.kind == .commandExecution else {
-                decisionValue = "decline"
-                break
-            }
-            if let data = amendment.data(using: .utf8),
-               let parsed = try? JSONSerialization.jsonObject(with: data)
-            {
-                return [
-                    "decision": [
-                        "acceptWithExecpolicyAmendment": [
-                            "execpolicy_amendment": parsed
-                        ]
+            guard let parsed = AgentApprovalDecision.parseExecpolicyAmendment(amendment) else { return nil }
+            return [
+                "decision": [
+                    "acceptWithExecpolicyAmendment": [
+                        "execpolicy_amendment": parsed
                     ]
                 ]
-            }
-            decisionValue = "acceptForSession"
+            ]
         }
         return ["decision": decisionValue]
     }

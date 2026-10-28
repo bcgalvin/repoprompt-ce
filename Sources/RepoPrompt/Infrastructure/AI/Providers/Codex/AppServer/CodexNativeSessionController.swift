@@ -5608,6 +5608,29 @@ final class CodexNativeSessionController {
             return .fileChange
         }()
 
+        // This authority is top-level only: nested fields must never resurrect legacy choices.
+        let availableDecisions: [AgentApprovalDecision]? = {
+            guard let value = params["availableDecisions"], !(value is NSNull) else { return nil }
+            guard let entries = value as? [Any] else { return [] }
+            return entries.compactMap { entry in
+                if let name = entry as? String {
+                    switch name {
+                    case "accept": return .accept
+                    case "acceptForSession": return .acceptForSession
+                    case "decline": return .decline
+                    case "cancel": return .cancel
+                    default: return nil
+                    }
+                }
+                guard let object = entry as? [String: Any], object.count == 1,
+                      let amendment = object["acceptWithExecpolicyAmendment"] as? [String: Any],
+                      let values = amendment["execpolicy_amendment"] as? [String], !values.isEmpty,
+                      let data = try? JSONSerialization.data(withJSONObject: values)
+                else { return nil }
+                return .acceptWithExecpolicyAmendment(String(decoding: data, as: UTF8.self))
+            }
+        }()
+
         let approvalID = AgentApprovalRequest.stableID(
             requestID: .codex(requestID),
             method: method,
@@ -5616,6 +5639,25 @@ final class CodexNativeSessionController {
             turnID: stableTurnID,
             itemID: itemID
         )
+        func makeRequest(details: [AgentApprovalDetail]) -> AgentApprovalRequest {
+            AgentApprovalRequest(
+                id: approvalID,
+                requestID: .codex(requestID),
+                method: method,
+                kind: kind,
+                threadID: threadID,
+                turnID: turnID,
+                itemID: itemID,
+                reason: reason,
+                command: command,
+                cwd: cwd,
+                grantRoot: grantRoot,
+                proposedExecpolicyAmendmentJSON: proposedExecpolicyAmendmentJSON,
+                availableDecisions: availableDecisions,
+                details: details
+            )
+        }
+        let presentedAmendment = makeRequest(details: []).presentedExecpolicyAmendmentJSON
         let detailSeed = approvalID.uuidString
         var details: [AgentApprovalDetail] = []
         var detailIndex = 0
@@ -5651,28 +5693,14 @@ final class CodexNativeSessionController {
         if let commandActionsJSON, !commandActionsJSON.isEmpty {
             appendDetail(label: "Command Actions", value: commandActionsJSON, isCode: true)
         }
-        if let proposedExecpolicyAmendmentJSON, !proposedExecpolicyAmendmentJSON.isEmpty {
-            appendDetail(label: "Execpolicy Amendment", value: proposedExecpolicyAmendmentJSON, isCode: true)
+        if let presentedAmendment, !presentedAmendment.isEmpty {
+            appendDetail(label: "Execpolicy Amendment", value: presentedAmendment, isCode: true)
         }
         if details.isEmpty {
             appendDetail(label: "Method", value: method, isCode: true)
         }
 
-        return AgentApprovalRequest(
-            id: approvalID,
-            requestID: .codex(requestID),
-            method: method,
-            kind: kind,
-            threadID: threadID,
-            turnID: turnID,
-            itemID: itemID,
-            reason: reason,
-            command: command,
-            cwd: cwd,
-            grantRoot: grantRoot,
-            proposedExecpolicyAmendmentJSON: proposedExecpolicyAmendmentJSON,
-            details: details
-        )
+        return makeRequest(details: details)
     }
 
     private static func firstString(in value: Any, keys: [String]) -> String? {
