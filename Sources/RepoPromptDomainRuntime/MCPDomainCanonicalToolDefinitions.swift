@@ -1739,6 +1739,7 @@ package enum MCPDomainCanonicalToolDefinitions {
         }
         schema["properties"] = .object(properties)
         let description = definition.description
+            .replacingOccurrences(of: "'hide'/'unhide' are non-destructive.", with: "'hide'/'unhide' are non-destructive and ignore include_hidden. Name-based 'hide' uses the unique visible match and falls back to a unique hidden match only when no visible workspace matches, so an ambiguous visible name stays ambiguous. Name-based 'unhide' needs a unique match among visible and hidden workspaces. Use a workspace UUID to disambiguate.")
             .replacingOccurrences(of: "Manage workspaces and compose-tab lifecycle across RepoPrompt windows.", with: "Manage workspaces and compose-tab lifecycle. App-backed calls operate through RepoPrompt windows; direct headless calls operate on canonical workspace contexts without windows.")
             .replacingOccurrences(of: "canonical API for per-window tab routing and context_id discovery", with: "canonical API for context binding and context_id discovery")
             .replacingOccurrences(of: "(id, name, repoPaths, showing window IDs, is_hidden)", with: "(app-backed: id, name, repo_paths, showing window IDs, is_hidden; headless: workspace_id, name, repo_paths, hidden, contexts, without window IDs)")
