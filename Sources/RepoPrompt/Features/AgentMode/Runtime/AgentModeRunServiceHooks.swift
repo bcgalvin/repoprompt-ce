@@ -34,9 +34,9 @@ extension AgentModeRunService {
     ///
     /// Authority: persistence/durable turn resources.
     struct AttachmentLifecycleHooks {
-        let reserveAttachmentsForTurn: ([AgentImageAttachment], AgentTabSession) -> UUID?
+        let reserveAttachmentsForTurn: ([AgentFileAttachment], AgentTabSession) -> UUID?
         let markAttachmentsConsumed: (AgentTabSession, UUID?) -> Void
-        let stageConsumedAttachmentFilesForDeferredCleanup: ([AgentImageAttachment], AgentTabSession) -> Void
+        let stageConsumedAttachmentFilesForDeferredCleanup: ([AgentFileAttachment], AgentTabSession) -> Void
         let consumeDeferredAttachmentCleanup: (AgentTabSession, Bool) -> Void
         let finalizeAttachmentsForTurn: (AgentTabSession, UUID?, DomainAgentRunAttachmentTurnDisposition) -> Void
     }
@@ -107,11 +107,11 @@ extension AgentModeRunService {
     ///
     /// Authority: provider capability inputs.
     struct ProviderInputAssemblyHooks {
-        let buildHeadlessAgentMessage: (AgentTabSession, String, UUID, [AgentImageAttachment]) -> AgentMessage
+        let buildHeadlessAgentMessage: (AgentTabSession, String, UUID, [AgentFileAttachment]) -> AgentMessage
         /// Augment queued steering text with skill context, tagged files, and attachment rendering before submit.
         let augmentUserMessageForProviderSend: (
             _ text: String,
-            _ attachments: [AgentImageAttachment],
+            _ attachments: [AgentFileAttachment],
             _ taggedFileAttachments: [AgentTaggedFileAttachment],
             _ session: AgentTabSession?,
             _ skipsSlashExpansion: Bool
@@ -175,6 +175,7 @@ extension AgentModeRunService {
             let captured = AgentSessionLinkDispatchContext(session: session, dispatchID: dispatchID)
             let outcome = claimAgentSessionLinkPrompt(session, dispatchID)
             return AgentSessionLinkDecoratedAgentMessage(
+                quietMarkerProducerLifetime: session.retainQuietMarkerProducer(for: outcome.claim),
                 dispatchContext: captured,
                 message: AgentSessionLinkPromptComposer.decorated(message, with: outcome.claim),
                 claim: outcome.claim,
@@ -188,6 +189,7 @@ extension AgentModeRunService {
     /// Named for the same reason its text-shaped sibling is: a tuple would let a call site keep
     /// compiling while silently ignoring the abort.
     struct AgentSessionLinkDecoratedAgentMessage {
+        var quietMarkerProducerLifetime: AgentQuietMarkerProducerLifetime?
         var dispatchContext: AgentSessionLinkDispatchContext?
         let message: AgentMessage
         let claim: AgentSessionLinkOutboundPromptClaim?
@@ -278,6 +280,9 @@ extension AgentModeRunService.Hooks {
             tabID: tabID,
             lifecycle: session.runLifecycle,
             hooks: .init(
+                sealQuietCheckIn: { owner, state, normal, successor in
+                    session.sealQuietCheckIn(owner: owner, terminalState: state, normal: normal, hasSuccessor: successor)
+                },
                 flushPendingAssistantDelta: {
                     transcript.flushPendingAssistantDelta(session)
                 },
