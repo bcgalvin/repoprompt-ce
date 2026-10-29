@@ -277,9 +277,10 @@ class OpenAIProvider: AIProvider {
         // Route via Responses-API when required
         if shouldUseResponsesAPI(for: model) {
             let responseMaxTokens = resolvedResponseMaxTokens(for: model, override: maxTokens)
-            // Use *background job + streaming attach* when the model forbids direct streaming.
-            // This creates a queued job and then attaches via SSE for incremental output.
-            if forceCompletion {
+            // Pro can reason silently for longer than a foreground connection or the
+            // Context Builder inactivity budget. Use the existing background job path
+            // and renew liveness from actual status responses while it is processing.
+            if forceCompletion || model.openAIReasoningMode == "pro" {
                 let response = try await createBackgroundResponse(
                     aiMessage,
                     model: model,
@@ -609,13 +610,14 @@ class OpenAIProvider: AIProvider {
         return false
     }
 
-    private func bridgeResponseStream(_ stream: AsyncThrowingStream<ResponseStreamEvent, Error>) -> AsyncThrowingStream<AIStreamResult, Error> {
+    func bridgeResponseStream(_ stream: AsyncThrowingStream<ResponseStreamEvent, Error>) -> AsyncThrowingStream<AIStreamResult, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
                 do {
                     var promptTokens: Int?
                     var completionTokens: Int?
                     var observedCompletionOutcome: AIProviderCompletionOutcome?
+                    var activityThrottle = ProviderTransportActivityThrottle()
 
                     for try await event in stream {
                         if Task.isCancelled { break }
@@ -661,7 +663,11 @@ class OpenAIProvider: AIProvider {
                         case let .error(errorEvent):
                             throw APIError.requestFailed(description: errorEvent.prettyDescription)
                         default:
-                            continue
+                            // Keepalive and structural events are received transport
+                            // activity even when no answer or reasoning text is ready.
+                            if activityThrottle.shouldEmit(at: .now) {
+                                continuation.yield(ProviderTransportActivity.result())
+                            }
                         }
                     }
 
@@ -883,7 +889,14 @@ extension OpenAIProvider: ResponsesJobProvider {
 
                     while !Task.isCancelled {
                         let response = try await service.responseModel(id: id, parameters: nil)
+                        try Task.checkCancellation()
                         pollCount += 1
+
+                        // An unchanged queued/in-progress status still proves the
+                        // server is reachable. A blocked or failed poll emits nothing.
+                        if response.status == .queued || response.status == .inProgress {
+                            continuation.yield(ProviderTransportActivity.result())
+                        }
 
                         // Emit status change updates
                         if response.status != lastStatus {
