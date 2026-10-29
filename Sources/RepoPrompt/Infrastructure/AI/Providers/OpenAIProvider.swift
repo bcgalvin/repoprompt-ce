@@ -94,6 +94,7 @@ class OpenAIProvider: AIProvider {
              .gpt61Sol, .gpt61SolLow, .gpt61SolHigh, .gpt61SolXHigh, .gpt61SolMax,
              .gpt61Terra, .gpt61TerraNone, .gpt61TerraLow, .gpt61TerraHigh, .gpt61TerraXHigh, .gpt61TerraMax,
              .gpt6Astra, .gpt6AstraLow, .gpt6AstraHigh, .gpt6AstraXHigh, .gpt6AstraMax,
+             .gpt6AstraPro, .gpt6AstraProLow, .gpt6AstraProHigh, .gpt6AstraProXHigh, .gpt6AstraProMax,
              .gpt6Luna, .gpt6LunaLow, .gpt6LunaHigh, .gpt6LunaXHigh, .gpt6Sol,
              .gpt5CodexLow, .gpt5CodexMed, .gpt5CodexHigh, .gpt5CodexXHigh:
             128_000
@@ -137,6 +138,7 @@ class OpenAIProvider: AIProvider {
              .gpt61Sol, .gpt61SolLow, .gpt61SolHigh, .gpt61SolXHigh, .gpt61SolMax,
              .gpt61Terra, .gpt61TerraNone, .gpt61TerraLow, .gpt61TerraHigh, .gpt61TerraXHigh, .gpt61TerraMax,
              .gpt6Astra, .gpt6AstraLow, .gpt6AstraHigh, .gpt6AstraXHigh, .gpt6AstraMax,
+             .gpt6AstraPro, .gpt6AstraProLow, .gpt6AstraProHigh, .gpt6AstraProXHigh, .gpt6AstraProMax,
              .gpt6Luna, .gpt6LunaLow, .gpt6LunaHigh, .gpt6LunaXHigh, .gpt6Sol,
              .gpt5CodexLow, .gpt5CodexMed, .gpt5CodexHigh, .gpt5CodexXHigh:
             return true
@@ -192,6 +194,36 @@ class OpenAIProvider: AIProvider {
         parameters.tools = nil
         parameters.toolChoice = nil
         return parameters
+    }
+
+    /// The pinned SwiftOpenAI Reasoning value has no `mode` field. Keep its request
+    /// encoding and transport, adding only the documented Responses execution mode.
+    func buildProResponseRequest(_ parameters: ModelResponseParameter, model: AIModel) throws -> URLRequest {
+        guard let mode = model.openAIReasoningMode else {
+            throw AIProviderError.invalidResponse(detail: "A Pro response request requires a Pro model selection.")
+        }
+        let apiKey = cachedApiKey ?? ""
+        let baseURL = cachedBaseURL ?? URL(string: "https://api.openai.com")!
+        try ProviderEndpointConsent.validate(baseURL, apiKey: apiKey, consentEndpoint: httpCredentialConsentEndpoint)
+        let url = baseURL.appendingPathComponent(overrideVersion ?? "v1").appendingPathComponent("responses")
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.httpBody = try JSONEncoder().encode(OpenAIResponseModeParameters(parameters: parameters, mode: mode))
+        return request
+    }
+
+    private func createResponse(
+        _ parameters: ModelResponseParameter,
+        model: AIModel,
+        service: OpenAIService
+    ) async throws -> ResponseModel {
+        guard model.openAIReasoningMode != nil else {
+            return try await service.responseCreate(parameters)
+        }
+        let request = try buildProResponseRequest(parameters, model: model)
+        return try await service.fetch(debugEnabled: false, type: ResponseModel.self, with: request)
     }
 
     static func isTransportActivityChunk(
@@ -397,7 +429,7 @@ class OpenAIProvider: AIProvider {
 
         do {
             // Assuming responseCreate exists in the service layer as per previous code.
-            let response = try await service.responseCreate(parameters)
+            let response = try await createResponse(parameters, model: model, service: service)
 
             let completionOutcome: AIProviderCompletionOutcome
             if response.status == .completed {
@@ -461,7 +493,13 @@ class OpenAIProvider: AIProvider {
             stream: true
         )
 
-        let sseStream = try await service.responseCreateStream(parameters)
+        let sseStream: AsyncThrowingStream<ResponseStreamEvent, Error>
+        if model.openAIReasoningMode != nil {
+            let request = try buildProResponseRequest(parameters, model: model)
+            sseStream = try await service.fetchStream(debugEnabled: false, type: ResponseStreamEvent.self, with: request)
+        } else {
+            sseStream = try await service.responseCreateStream(parameters)
+        }
         return bridgeResponseStream(sseStream)
     }
 
@@ -662,7 +700,7 @@ class OpenAIProvider: AIProvider {
         }
     }
 
-    private func buildBackgroundResponseParameters(
+    func buildBackgroundResponseParameters(
         _ aiMessage: AIMessage,
         model: AIModel,
         maxTokens: Int?
@@ -765,6 +803,11 @@ class OpenAIProvider: AIProvider {
         case .gpt61SolHigh: return (.gpt61Sol, "high")
         case .gpt61SolLow: return (.gpt61Sol, "low")
         case .gpt61Sol: return (.gpt61Sol, "medium")
+        case .gpt6AstraPro: return (.gpt6Astra, "medium")
+        case .gpt6AstraProLow: return (.gpt6Astra, "low")
+        case .gpt6AstraProHigh: return (.gpt6Astra, "high")
+        case .gpt6AstraProXHigh: return (.gpt6Astra, "xhigh")
+        case .gpt6AstraProMax: return (.gpt6Astra, "max")
         case .gpt6AstraMax: return (.gpt6Astra, "max")
         case .gpt6AstraXHigh: return (.gpt6Astra, "xhigh")
         case .gpt6AstraHigh: return (.gpt6Astra, "high")
@@ -799,7 +842,7 @@ extension OpenAIProvider: ResponsesJobProvider {
         maxTokens: Int?
     ) async throws -> ResponseModel {
         let parameters = try buildBackgroundResponseParameters(message, model: model, maxTokens: maxTokens)
-        let response = try await getService().responseCreate(parameters)
+        let response = try await createResponse(parameters, model: model, service: getService())
 
         if response.status == .failed {
             let detail = response.error?.message ?? response.incompleteDetails?.reason ?? "Responses API returned a failed status."
