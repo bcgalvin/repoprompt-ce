@@ -1587,7 +1587,9 @@ final actor ClaudeNativeProcessSessionController {
                     let status: TurnStatus = resolved.interrupted ? .cancelled : determineTurnStatus(from: payload, stopReasonHint: stopReason)
                     completion = DeferredCompletion(executionID: resolved.executionID, inputIDs: resolved.inputIDs, status: status, keyed: true)
                 } else {
-                    ownsOutput = frameOwnsOutput ?? correlation.ownsOutput
+                    // Subagent frames have their own stream. Reject them without
+                    // changing the main-thread message's ownership for later deltas.
+                    ownsOutput = !Self.isSubagentActivity(payload) && (frameOwnsOutput ?? correlation.ownsOutput)
                 }
             } catch {
                 correlationFailed = true
@@ -1701,9 +1703,15 @@ final actor ClaudeNativeProcessSessionController {
         }
     }
 
+    private static func isSubagentActivity(_ payload: [String: Any]) -> Bool {
+        ["parent_tool_use_id", "parentToolUseId"].contains { key in
+            guard let parent = payload[key] as? String else { return false }
+            return !parent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+    }
+
     private static func isMainThreadActivity(_ payload: [String: Any]) -> Bool {
-        if let parent = payload["parent_tool_use_id"], !(parent is NSNull),
-           !((parent as? String)?.isEmpty ?? false) { return false }
+        guard !isSubagentActivity(payload) else { return false }
         switch payload["type"] as? String {
         case "assistant", "message": return true
         case "stream_event": return (payload["event"] as? [String: Any])?["type"] as? String == "message_start"

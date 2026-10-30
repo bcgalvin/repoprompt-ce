@@ -374,14 +374,22 @@ final class ClaudeIntegratedAgentModeRunner {
 
         @discardableResult
         func testConsumeQuietEvents(_ events: [NativeAgentRuntimeEvent], session: AgentTabSession, runID: UUID, owner: AgentRunOwnership) async -> Bool {
+            if case .completed = await testConsumeTurnStatus(events, session: session, runID: runID, owner: owner) { return true }
+            return false
+        }
+
+        func testConsumeTurnStatus(_ events: [NativeAgentRuntimeEvent], session: AgentTabSession, runID: UUID, owner: AgentRunOwnership) async -> ClaudeNativeProcessSessionController.TurnStatus {
             let stream = AsyncStream<NativeAgentRuntimeEvent> { continuation in
                 for event in events {
                     continuation.yield(event)
                 }
                 continuation.finish()
             }
-            if case .completed = await consumeEvents(stream, session: session, runID: runID, runAttemptID: owner.attemptID) { return true }
-            return false
+            switch await consumeEvents(stream, session: session, runID: runID, runAttemptID: owner.attemptID) {
+            case .completed: return .completed
+            case .cancelled: return .cancelled
+            case .failed: return .failed
+            }
         }
     #endif
 
@@ -392,6 +400,9 @@ final class ClaudeIntegratedAgentModeRunner {
         runAttemptID: UUID
     ) async -> ConsumeEventsOutcome {
         var exitedDueToAttemptMismatch = false
+        // Keyed answers may settle several unprotected inputs across separate events.
+        // Keep their strongest outcome until the existing settlement boundary is terminal.
+        var unprotectedTurnStatus: ClaudeNativeProcessSessionController.TurnStatus = .completed
         // Only first-party Claude owns this subscription telemetry. No extra request or
         // process is started; compatible launchers cannot populate Claude account usage.
         var quotaLease: UUID?
@@ -494,16 +505,23 @@ final class ClaudeIntegratedAgentModeRunner {
                 case let .turnsCompleted(group, status): (ids, turnStatus, keyed) = (group, status, true)
                 default: preconditionFailure("Expected Claude completion")
                 }
-                guard let terminal = Self.settleCompletedTurnIDs(ids, session: session, waitForAllUnprotected: keyed) else {
+                guard let settlement = Self.settleCompletedTurnIDsWithProtection(ids, session: session, waitForAllUnprotected: keyed) else {
                     continue eventLoop
                 }
-                if !terminal {
+                if settlement.answeredUnprotected {
+                    switch (unprotectedTurnStatus, turnStatus) {
+                    case (.failed, _), (_, .failed): unprotectedTurnStatus = .failed
+                    case (.cancelled, _), (_, .cancelled): unprotectedTurnStatus = .cancelled
+                    default: unprotectedTurnStatus = .completed
+                    }
+                }
+                if !settlement.terminal {
                     if !session.runState.isActive { session.runState = .running }
                     hooks.presentation.setAgentRunActive(session, true)
                     hooks.bindingObservation.updateBindings(session)
                     continue eventLoop
                 }
-                switch turnStatus {
+                switch unprotectedTurnStatus {
                 case .completed:
                     return .completed
                 case .cancelled:
@@ -547,6 +565,10 @@ final class ClaudeIntegratedAgentModeRunner {
     /// A plural answer is one boundary: retire every target before deciding whether to return.
     /// nil means stale; false means a protected/partial completion; true means terminal.
     static func settleCompletedTurnIDs(_ ids: [UUID], session: AgentTabSession, waitForAllUnprotected: Bool = true) -> Bool? {
+        settleCompletedTurnIDsWithProtection(ids, session: session, waitForAllUnprotected: waitForAllUnprotected)?.terminal
+    }
+
+    private static func settleCompletedTurnIDsWithProtection(_ ids: [UUID], session: AgentTabSession, waitForAllUnprotected: Bool) -> (terminal: Bool, answeredUnprotected: Bool)? {
         let matched = Set(ids).intersection(session.claudeExpectedTurnIDs)
         guard !matched.isEmpty else { return nil }
         let explicitlyProtected = matched.intersection(session.claudeSupersedingProtectedTurnIDs)
@@ -559,10 +581,12 @@ final class ClaudeIntegratedAgentModeRunner {
         )
         let answeredUnprotected = matched.count > explicitlyProtected.count + legacyProtectedCount
         let otherUnprotected = session.claudeExpectedTurnIDs.subtracting(session.claudeSupersedingProtectedTurnIDs)
-        guard answeredUnprotected, !waitForAllUnprotected || otherUnprotected.isEmpty else { return false }
+        guard answeredUnprotected, !waitForAllUnprotected || otherUnprotected.isEmpty else {
+            return (false, answeredUnprotected)
+        }
         session.pendingSupersedingTurnCompletions = 0
         session.claudeSupersedingProtectedTurnIDs.removeAll()
-        return true
+        return (true, answeredUnprotected)
     }
 
     private func handleAcquireFailure(
