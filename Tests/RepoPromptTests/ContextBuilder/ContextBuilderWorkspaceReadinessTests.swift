@@ -1,5 +1,6 @@
 import Foundation
 @testable import RepoPromptApp
+import RepoPromptWorkspaceCore
 import XCTest
 
 #if DEBUG
@@ -90,6 +91,81 @@ import XCTest
                         XCTAssertEqual(reason, .unresolvedSelection(count: 1))
                     }
                 }
+            }
+        }
+
+        func testLogicalAliasesOfOneOwnedWorktreeElectAndFinalizeReview() async throws {
+            try await WorkspaceAuthorityRootTestFixture.withFixture(rootNames: ["A", "B", "Worktree"], configuration: { Array($0.prefix(2)) }) { fixture in
+                let firstBinding = try fixture.makeWorktreeBinding(logicalRootIndex: 0, worktreeRootIndex: 2)
+                let alias = URL(fileURLWithPath: fixture.rootPaths[1], isDirectory: true)
+                let git = try ReviewGitRepositoryFixture()
+                try FileManager.default.removeItem(at: alias.appendingPathComponent("README.md"))
+                try git.runGit(["worktree", "add", "--detach", alias.path, "HEAD"], at: URL(fileURLWithPath: fixture.rootPaths[0]))
+                let secondBinding = AgentSessionWorktreeBinding(
+                    id: "alias-binding", repositoryID: firstBinding.repositoryID, repoKey: firstBinding.repoKey,
+                    logicalRootPath: alias.path, logicalRootName: "alias",
+                    worktreeID: firstBinding.worktreeID, worktreeRootPath: firstBinding.worktreeRootPath,
+                    commonGitDir: firstBinding.commonGitDir, isMainWorktree: firstBinding.isMainWorktree, source: "test"
+                )
+                // Selecting either logical alias must resolve through the same materialized physical authority.
+                let selection = StoredSelection(selectedPaths: [alias.appendingPathComponent("README.md").path])
+                let context = try await self.resolve(fixture, selection: selection, bindingState: .hydrated([secondBinding, firstBinding]))
+                let store = fixture.files.workspaceFileContextStore
+                let materializer = WorkspaceRootBindingProjectionMaterializer(store: store)
+                defer {
+                    fixture.startOwnedTask { await materializer.release(sessionID: context.parentAgentSessionID) }
+                }
+                let projection = try XCTUnwrap(context.lookupContext.bindingProjection)
+                let boundRoots = projection.boundRootsForMetadata
+                XCTAssertEqual(boundRoots.count, 2)
+                XCTAssertEqual(projection.physicalRootRefs.count, 1)
+                XCTAssertEqual(Set(projection.logicalRootRefs.map(\.standardizedFullPath)), Set(fixture.rootPaths.prefix(2)))
+                let root = try XCTUnwrap(boundRoots.first)
+                let authorization = try XCTUnwrap(root.sessionRootAuthorization)
+                XCTAssertTrue(boundRoots.allSatisfy { $0.sessionRootAuthorization == authorization })
+                guard case let .available(target) = context.reviewTargetResolution else {
+                    return XCTFail("Compatible logical aliases must not be ambiguous: \(context.reviewTargetResolution)")
+                }
+                XCTAssertEqual(target.checkouts.count, 1)
+                XCTAssertEqual(target.primaryCheckout.contributingRoots.count, 1)
+                XCTAssertEqual(target.primaryCheckout.contributingRoots.first?.sessionRootAuthorization, authorization)
+                let physicalPath = firstBinding.worktreeRootPath + "/README.md"
+                XCTAssertEqual(target.initialOrdinarySelectionIdentities, [physicalPath])
+                let final = try await context.authorizeFinalReviewSelection(
+                    selection, workspaceID: fixture.workspace.id, tabID: context.tabID,
+                    selectionRevision: target.sourceSelectionRevision, store: store
+                )
+                XCTAssertEqual(final.checkoutAuthorizations.flatMap(\.ordinaryPhysicalPaths), [physicalPath])
+
+                // A conflicting lifetime on an alias must not be hidden by choosing the first binding.
+                let other = try XCTUnwrap(boundRoots.last)
+                let conflictingProjection = WorkspaceRootBindingProjection(
+                    sessionID: projection.sessionID,
+                    boundRoots: [root, .init(
+                        logicalRoot: other.logicalRoot, physicalRoot: other.physicalRoot, binding: other.binding,
+                        sessionRootAuthorization: WorkspaceSessionRootAuthorization(
+                            sessionID: authorization.sessionID, ownershipGeneration: authorization.ownershipGeneration,
+                            root: authorization.root, lifetimeID: UUID()
+                        )
+                    )],
+                    visibleLogicalRoots: projection.visibleLogicalRootRefs
+                )
+                let conflicting = try await ContextBuilderReviewTargetResolver().resolve(
+                    input: ContextBuilderReviewTargetInput(
+                        workspaceID: fixture.workspace.id, tabID: context.tabID,
+                        selectionRevision: target.sourceSelectionRevision, selection: StoredSelection(selectedPaths: [physicalPath]),
+                        lookupContext: WorkspaceLookupContext(
+                            rootScope: conflictingProjection.lookupRootScope, bindingProjection: conflictingProjection
+                        ),
+                        reviewGitContext: context.reviewGitContext
+                    ), store: store
+                )
+                guard case .unavailable(.ambiguousOwnership) = conflicting else {
+                    return XCTFail("Conflicting alias authority must remain ambiguous: \(conflicting)")
+                }
+                await materializer.release(sessionID: context.parentAgentSessionID)
+                let reason = await ContextBuilderReviewTargetResolver().revalidate(target, store: store)
+                XCTAssertEqual(reason, .staleWorkspaceRoot)
             }
         }
 

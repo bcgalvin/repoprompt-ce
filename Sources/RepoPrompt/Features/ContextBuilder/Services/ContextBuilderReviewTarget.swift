@@ -894,9 +894,15 @@ struct ContextBuilderReviewTargetResolver {
                 && $0.physicalRoot.standardizedFullPath == physicalRoot.standardizedFullPath
         } ?? []
         let boundRoot = boundRoots.first
-        guard boundRoots.allSatisfy({ $0 == boundRoot }),
-              boundRoot == nil || boundRoot?.physicalRoot == physicalRoot
-        else {
+        // Logical aliases remain in the frozen projection. Review authority is physical-root scoped;
+        // retain its deterministic first logical root for display, not as an equality requirement.
+        guard boundRoots.allSatisfy({
+            $0.physicalRoot == physicalRoot
+                && $0.sessionRootAuthorization == boundRoot?.sessionRootAuthorization
+                && $0.binding.repositoryID == boundRoot?.binding.repositoryID
+                && $0.binding.repoKey == boundRoot?.binding.repoKey
+                && $0.binding.worktreeID == boundRoot?.binding.worktreeID
+        }) else {
             throw ContextBuilderReviewTargetUnavailableReason.ambiguousOwnership
         }
         let isSessionWorktreeRoot: Bool = switch lookupContext.rootScope {
