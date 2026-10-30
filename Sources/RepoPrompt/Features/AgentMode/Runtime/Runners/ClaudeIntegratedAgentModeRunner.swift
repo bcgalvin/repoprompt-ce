@@ -485,32 +485,24 @@ final class ClaudeIntegratedAgentModeRunner {
                     }
                     hooks.bindingObservation.updateBindings(session)
                 }
-            case let .turnCompleted(turnID, turnStatus):
-                guard session.claudeExpectedTurnIDs.contains(turnID) else {
-                    // Stale completion from a previous cancelled run attempt; ignore.
+            case .turnCompleted, .turnsCompleted:
+                let ids: [UUID]
+                let turnStatus: ClaudeNativeProcessSessionController.TurnStatus
+                let keyed: Bool
+                switch event {
+                case let .turnCompleted(id, status): (ids, turnStatus, keyed) = ([id], status, false)
+                case let .turnsCompleted(group, status): (ids, turnStatus, keyed) = (group, status, true)
+                default: preconditionFailure("Expected Claude completion")
+                }
+                guard let terminal = Self.settleCompletedTurnIDs(ids, session: session, waitForAllUnprotected: keyed) else {
                     continue eventLoop
                 }
-                session.claudeExpectedTurnIDs.remove(turnID)
-
-                let wasProtectedClaudeTurn = session.claudeSupersedingProtectedTurnIDs.remove(turnID) != nil
-                let hasLegacyUnscopedProtection = session.claudeSupersedingProtectedTurnIDs.isEmpty
-                    && session.pendingSupersedingTurnCompletions > 0
-                if wasProtectedClaudeTurn || hasLegacyUnscopedProtection {
-                    session.pendingSupersedingTurnCompletions = max(0, session.pendingSupersedingTurnCompletions - 1)
-                    // Keep run alive for the next (superseding) turn regardless of the
-                    // stale turn's reported terminal status. Old interrupted turns can land
-                    // as .cancelled, .failed, or even .completed after the superseding send
-                    // is already in flight.
-                    if !session.runState.isActive {
-                        session.runState = .running
-                    }
+                if !terminal {
+                    if !session.runState.isActive { session.runState = .running }
                     hooks.presentation.setAgentRunActive(session, true)
                     hooks.bindingObservation.updateBindings(session)
                     continue eventLoop
                 }
-                // No superseding turn expected — terminal for this run.
-                session.pendingSupersedingTurnCompletions = 0
-                session.claudeSupersedingProtectedTurnIDs.removeAll()
                 switch turnStatus {
                 case .completed:
                     return .completed
@@ -550,6 +542,27 @@ final class ClaudeIntegratedAgentModeRunner {
             errorText: "Claude events stream ended unexpectedly. The run may need to be restarted.",
             shouldShutdownSession: false
         )
+    }
+
+    /// A plural answer is one boundary: retire every target before deciding whether to return.
+    /// nil means stale; false means a protected/partial completion; true means terminal.
+    static func settleCompletedTurnIDs(_ ids: [UUID], session: AgentTabSession, waitForAllUnprotected: Bool = true) -> Bool? {
+        let matched = Set(ids).intersection(session.claudeExpectedTurnIDs)
+        guard !matched.isEmpty else { return nil }
+        let explicitlyProtected = matched.intersection(session.claudeSupersedingProtectedTurnIDs)
+        let legacyProtectedCount = session.claudeSupersedingProtectedTurnIDs.isEmpty
+            && session.pendingSupersedingTurnCompletions > 0 ? 1 : 0
+        session.claudeExpectedTurnIDs.subtract(matched)
+        session.claudeSupersedingProtectedTurnIDs.subtract(matched)
+        session.pendingSupersedingTurnCompletions = max(
+            0, session.pendingSupersedingTurnCompletions - explicitlyProtected.count - legacyProtectedCount
+        )
+        let answeredUnprotected = matched.count > explicitlyProtected.count + legacyProtectedCount
+        let otherUnprotected = session.claudeExpectedTurnIDs.subtracting(session.claudeSupersedingProtectedTurnIDs)
+        guard answeredUnprotected, !waitForAllUnprotected || otherUnprotected.isEmpty else { return false }
+        session.pendingSupersedingTurnCompletions = 0
+        session.claudeSupersedingProtectedTurnIDs.removeAll()
+        return true
     }
 
     private func handleAcquireFailure(
