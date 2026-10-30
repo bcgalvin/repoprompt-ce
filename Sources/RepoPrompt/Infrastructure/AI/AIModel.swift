@@ -547,7 +547,7 @@ public enum AIModel: Equatable, Hashable {
 
     private static let modelDefinitions: [ModelInfo] = {
         let azureVariants = baseModelDefinitions
-            .filter { $0.provider == ProviderIndex.openAI }
+            .filter { $0.provider == ProviderIndex.openAI && $0.model.openAIReasoningMode == nil }
             .map { info -> ModelInfo in
                 let displaySource = info.displayName.isEmpty ? info.rawValue : info.displayName
                 return ModelInfo(
@@ -1282,10 +1282,13 @@ public enum AIModel: Equatable, Hashable {
         if case let .openAIServiceTierVariant(base, _) = self {
             return base.canStream
         }
+        // Mode-based Pro responses use terminal-only background polling even if
+        // an older saved override requests incremental streaming.
+        if openAIReasoningMode != nil { return false }
         if let override = ModelOverridesSettings.shared.streamOverride(for: rawValue) {
             return override
         }
-        // Explicitly disable streaming for all Pro variants
+        // Explicitly disable streaming for legacy Pro variants
         if self == .gpt5Pro || self == .gpt5ProXHigh || self == .gpt54Pro || self == .gpt54ProXHigh {
             return false
         }
@@ -1335,6 +1338,16 @@ public enum AIModel: Equatable, Hashable {
             return effort.rawValue
         default: return nil
         }
+    }
+
+    /// Keep mode-bearing selections distinguishable when their execution profile
+    /// uses the shared API model ID. A different runtime model remains authoritative.
+    static func readableModelID(selectedID: String, executionID: String?) -> String {
+        guard let selected = fromModelName(selectedID),
+              selected.openAIReasoningMode != nil,
+              executionID == nil || executionID == selected.modelName
+        else { return executionID ?? selectedID }
+        return selectedID
     }
 
     /// Mode and effort are independent. Legacy Pro model IDs retain their own API behavior.

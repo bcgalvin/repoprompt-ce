@@ -193,6 +193,7 @@ final class OpenAIProModeTests: XCTestCase {
             XCTAssertEqual(model.modelName, "gpt-6-astra")
             XCTAssertEqual(model.providerType, .openAI)
             XCTAssertTrue(model.usesResponsesAPI)
+            XCTAssertFalse(model.canStream)
             XCTAssertEqual(model.openAIReasoningMode, "pro")
             XCTAssertEqual(model.defaultReasoningEffort, effort)
             XCTAssertNotEqual(model, AIModel.gpt6Astra)
@@ -200,6 +201,34 @@ final class OpenAIProModeTests: XCTestCase {
         }
         for model: AIModel in [.gpt6Astra, .gpt6AstraMax, .gpt61Sol, .gpt54Pro, .codexCliGpt6AstraMax] {
             XCTAssertNil(model.openAIReasoningMode, model.rawValue)
+        }
+    }
+
+    func testProAliasesAreExcludedFromAutomaticAzureOfferingsWithoutDroppingExplicitSelections() throws {
+        let azureModelNames = Set(AIModel.modelsForProvider(.azure).map(\.modelName))
+        let defaultIDs = Set(AzureOpenAIProvider.defaultModelDescriptors.map(\.id))
+        XCTAssertTrue(azureModelNames.contains(AIModel.gpt6Astra.rawValue))
+        XCTAssertTrue(defaultIDs.contains(AIModel.gpt6Astra.rawValue))
+
+        let explicit = variants.map { model, _ in
+            AzureOpenAIConfiguration.ModelDescriptor(
+                id: model.rawValue, displayName: "My deployment", endpoint: .responses,
+                supportsStreaming: false, baseModelID: model.rawValue,
+                supportsChatCompletions: false, supportsResponses: true
+            )
+        }
+        let merged = AzureOpenAIProvider.mergedWithDefaultDescriptors(explicit)
+        for (model, _) in variants {
+            XCTAssertFalse(azureModelNames.contains(model.rawValue), model.rawValue)
+            XCTAssertFalse(defaultIDs.contains(model.rawValue), model.rawValue)
+
+            let retained = try XCTUnwrap(merged.first { $0.id == model.rawValue })
+            XCTAssertEqual(retained.baseModelID, model.rawValue)
+            XCTAssertEqual(retained.endpoint, .responses)
+            XCTAssertEqual(retained.supportsStreaming, false)
+
+            let storedSelection = AIModel.azureCustom(name: model.rawValue).rawValue
+            XCTAssertEqual(AIModel.fromModelName(storedSelection)?.rawValue, storedSelection)
         }
     }
 
@@ -236,6 +265,7 @@ final class OpenAIProModeTests: XCTestCase {
 
     func testProModePreservesExplicitServiceTierAndCustomEndpoint() throws {
         let model = AIModel.openAIServiceTierVariant(base: .gpt6AstraProMax, tier: "flex")
+        XCTAssertFalse(model.canStream)
         let provider = OpenAIProvider(apiKey: "test-key", baseURL: URL(string: "https://example.test/proxy"), overrideVersion: "v4")
         let parameters = try provider.buildForegroundResponseParameters(AIMessage(systemPrompt: "", userMessage: "review"), model: model, maxTokens: nil, stream: false)
         let request = try provider.buildProResponseRequest(parameters, model: model)
